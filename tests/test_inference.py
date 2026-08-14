@@ -38,9 +38,13 @@ def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) 
     script = tmp_path / "watch.py"
     script.write_text("# test command target", encoding="utf-8")
     calls: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
-    def runner(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def runner(
+        arguments: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
+        environments.append(kwargs["env"])
         out_dir = Path(arguments[arguments.index("--out-dir") + 1])
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "frame_0001.jpg").write_bytes(b"frame")
@@ -56,6 +60,7 @@ def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) 
     assert len(calls) == 1
     assert "--no-whisper" in calls[0]
     assert "--detail" in calls[0]
+    assert environments[0]["PYTHONUTF8"] == "1"
     assert evidence.frames[0].name == "frame_0001.jpg"
 
 

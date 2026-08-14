@@ -99,6 +99,7 @@ def _offline_environment() -> dict[str, str]:
             "npm_config_offline": "true",
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
+            "PYTHONUTF8": "1",
         }
     )
     return environment
