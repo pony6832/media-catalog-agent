@@ -275,7 +275,7 @@ class LocalAnalyzer:
         self,
         *,
         model: str,
-        video_extractor: WatchVideoExtractor | McpVideoExtractor | None = None,
+        video_extractor: VideoExtractor | None = None,
         ollama_executable: str = "ollama",
         runner: Runner = subprocess.run,
         timeout: float = 300,
