@@ -48,7 +48,7 @@ def test_process_selected_persists_analysis_without_marking_complete(
     process_selected([selected_id], database, SuccessfulAnalyzer())
 
     record = database.get_record(selected_id)
-    assert record.status is Status.PROCESSING
+    assert record.status is Status.ANALYZED
     assert record.description == "一張海邊夕陽照片。"
     assert record.highlights == ("海浪", "夕陽")
     assert record.keywords == ("海邊", "黃昏")

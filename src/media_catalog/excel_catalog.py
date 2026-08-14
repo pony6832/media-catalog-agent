@@ -28,6 +28,7 @@ CATALOG_HEADERS = (
 _STATUS_LABELS = {
     Status.PENDING: "待處理",
     Status.PROCESSING: "處理中",
+    Status.ANALYZED: "待確認",
     Status.COMPLETED: "完成",
     Status.SKIPPED: "略過",
     Status.FAILED: "失敗",
@@ -65,7 +66,11 @@ def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
                 "；".join(record.highlights),
                 "、".join(record.keywords),
                 None,
-                record.updated_at if record.status is Status.COMPLETED else None,
+                (
+                    record.updated_at
+                    if record.status in {Status.ANALYZED, Status.COMPLETED}
+                    else None
+                ),
                 str(record.markdown_path) if record.markdown_path else None,
                 str(record.backup_path) if record.backup_path else None,
                 record.error,

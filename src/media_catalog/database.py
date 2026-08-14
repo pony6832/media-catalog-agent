@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -98,6 +99,34 @@ class CatalogDatabase:
             ).fetchall()
         return [self._to_record(row) for row in rows]
 
+    def list_by_status(self, statuses: Sequence[Status]) -> list[MediaRecord]:
+        if not statuses:
+            return []
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM media_records WHERE status IN ({placeholders}) "
+                "ORDER BY discovered_at, id",
+                tuple(status.value for status in statuses),
+            ).fetchall()
+        return [self._to_record(row) for row in rows]
+
+    def requeue_processing(self) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE media_records
+                SET status = ?, error = NULL, updated_at = ?
+                WHERE status = ?
+                """,
+                (
+                    Status.PENDING.value,
+                    _now(),
+                    Status.PROCESSING.value,
+                ),
+            )
+        return cursor.rowcount
+
     def set_status(
         self, record_id: str, status: Status, *, error: str | None = None
     ) -> MediaRecord:
@@ -133,7 +162,7 @@ class CatalogDatabase:
                 WHERE id = ?
                 """,
                 (
-                    Status.PROCESSING.value,
+                    Status.ANALYZED.value,
                     description,
                     json.dumps(highlights, ensure_ascii=False),
                     json.dumps(keywords, ensure_ascii=False),

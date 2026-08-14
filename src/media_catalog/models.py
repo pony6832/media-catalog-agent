@@ -8,6 +8,7 @@ from pathlib import Path
 class Status(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
+    ANALYZED = "analyzed"
     COMPLETED = "completed"
     SKIPPED = "skipped"
     FAILED = "failed"
