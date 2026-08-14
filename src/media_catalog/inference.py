@@ -41,6 +41,11 @@ class VideoExtractor(Protocol):
         raise NotImplementedError
 
 
+class ImagePreparer(Protocol):
+    def prepare(self, source: Path) -> Path:
+        raise NotImplementedError
+
+
 class FallbackVideoExtractor:
     def __init__(
         self,
@@ -271,18 +276,92 @@ class McpVideoExtractor:
         )
 
 
+class FfmpegImagePreparer:
+    def __init__(
+        self,
+        *,
+        output_root: Path,
+        ffmpeg_executable: str = "ffmpeg",
+        runner: Runner = subprocess.run,
+        timeout: float = 60,
+    ) -> None:
+        self.output_root = Path(output_root).resolve()
+        self.ffmpeg_executable = ffmpeg_executable
+        self.runner = runner
+        self.timeout = timeout
+
+    def prepare(self, source: Path) -> Path:
+        media_path = _local_media_path(source)
+        stat_result = media_path.stat()
+        key_source = (
+            f"{str(media_path).casefold()}|{stat_result.st_size}|"
+            f"{stat_result.st_mtime_ns}"
+        )
+        key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:20]
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        preview = self.output_root / f"{key}.jpg"
+        if preview.is_file() and preview.stat().st_size > 0:
+            return preview
+
+        arguments = [
+            self.ffmpeg_executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(media_path),
+            "-vf",
+            "scale=1024:1024:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(preview),
+        ]
+        try:
+            result = self.runner(
+                arguments,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout,
+                check=False,
+                env=_offline_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AnalysisError(f"ffmpeg preview failed: {error}") from error
+        if result.returncode != 0:
+            raise AnalysisError(
+                f"ffmpeg preview failed with exit code {result.returncode}: "
+                f"{result.stderr.strip()}"
+            )
+        if not preview.is_file() or preview.stat().st_size == 0:
+            raise AnalysisError("ffmpeg preview produced no image")
+        return preview
+
+
+def _representative_paths(paths: list[Path], limit: int = 3) -> list[Path]:
+    if len(paths) <= limit:
+        return paths
+    indexes = (0, len(paths) // 2, len(paths) - 1)
+    return [paths[index] for index in indexes]
+
+
 class LocalAnalyzer:
     def __init__(
         self,
         *,
         model: str,
         video_extractor: VideoExtractor | None = None,
+        image_preparer: ImagePreparer | None = None,
         ollama_executable: str = "ollama",
         runner: Runner = subprocess.run,
         timeout: float = 300,
     ) -> None:
         self.model = model
         self.video_extractor = video_extractor
+        self.image_preparer = image_preparer
         self.ollama_executable = ollama_executable
         self.runner = runner
         self.timeout = timeout
@@ -295,8 +374,13 @@ class LocalAnalyzer:
             if self.video_extractor is None:
                 raise AnalysisError("A local video extractor is required for video")
             evidence = self.video_extractor.extract(media_path)
-            visual_paths = list(evidence.frames)
+            visual_paths = _representative_paths(list(evidence.frames))
             ocr_text = evidence.ocr_text
+
+        if self.image_preparer is not None:
+            visual_paths = [
+                self.image_preparer.prepare(path) for path in visual_paths
+            ]
 
         prompt = (
             "請只輸出單一 JSON 物件，並根據提供的本機影像填寫內容。"

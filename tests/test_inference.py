@@ -7,6 +7,7 @@ import pytest
 from media_catalog.inference import (
     AnalysisError,
     FallbackVideoExtractor,
+    FfmpegImagePreparer,
     LocalAnalyzer,
     McpVideoExtractor,
     VideoEvidence,
@@ -249,3 +250,75 @@ def test_local_analyzer_uses_readable_strict_schema_prompt(tmp_path: Path) -> No
         field in captured_prompt
         for field in ("description", "highlights", "keywords")
     )
+
+
+def test_ffmpeg_preparer_creates_a_bounded_preview_without_source_change(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "large.png"
+    source.write_bytes(b"original")
+    before = source.stat()
+    calls: list[list[str]] = []
+
+    def runner(
+        arguments: list[str], **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        Path(arguments[-1]).write_bytes(b"preview")
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    preview = FfmpegImagePreparer(
+        output_root=tmp_path / "previews", runner=runner
+    ).prepare(source)
+
+    assert preview.is_file()
+    assert preview.parent == (tmp_path / "previews").resolve()
+    assert "scale=1024:1024:force_original_aspect_ratio=decrease" in calls[0]
+    assert source.read_bytes() == b"original"
+    assert source.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_local_analyzer_prepares_only_three_representative_video_frames(
+    tmp_path: Path,
+) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    frames = tuple(tmp_path / f"frame-{index}.jpg" for index in range(7))
+    for frame in frames:
+        frame.write_bytes(b"frame")
+    prepared: list[Path] = []
+    ollama_arguments: list[str] = []
+
+    class RecordingPreparer:
+        def prepare(self, source: Path) -> Path:
+            prepared.append(source)
+            return source
+
+    def runner(
+        arguments: list[str], **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        ollama_arguments.extend(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=json.dumps(
+                {
+                    "description": "影片預覽",
+                    "highlights": ["三個代表畫面"],
+                    "keywords": ["影片"],
+                }
+            ),
+            stderr="",
+        )
+
+    analyzer = LocalAnalyzer(
+        model="qwen3-vl:8b",
+        video_extractor=RecordingExtractor(VideoEvidence(frames, {})),
+        image_preparer=RecordingPreparer(),
+        runner=runner,
+    )
+
+    analyzer.analyze(video)
+
+    assert prepared == [frames[0], frames[3], frames[6]]
+    assert all(str(frame) in ollama_arguments for frame in prepared)

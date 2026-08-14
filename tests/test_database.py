@@ -66,3 +66,27 @@ def test_requeue_processing_only_resets_interrupted_records(
     assert database.requeue_processing() == 1
     assert database.get_record(processing.id).status is Status.PENDING
     assert database.get_record(failed.id).status is Status.FAILED
+
+
+def test_requeue_failed_only_resets_failed_records(tmp_path: Path) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    failed_path = tmp_path / "failed.jpg"
+    analyzed_path = tmp_path / "analyzed.jpg"
+    failed_path.write_bytes(b"failed")
+    analyzed_path.write_bytes(b"analyzed")
+    failed = database.upsert_discovered(failed_path, "failed", "image/jpeg")
+    analyzed = database.upsert_discovered(
+        analyzed_path, "analyzed", "image/jpeg"
+    )
+    database.set_status(failed.id, Status.FAILED, error="bad output")
+    database.save_analysis(
+        analyzed.id,
+        description="done",
+        highlights=("done",),
+        keywords=("done",),
+    )
+
+    assert database.requeue_failed() == 1
+    assert database.get_record(failed.id).status is Status.PENDING
+    assert database.get_record(failed.id).error is None
+    assert database.get_record(analyzed.id).status is Status.ANALYZED

@@ -127,6 +127,22 @@ class CatalogDatabase:
             )
         return cursor.rowcount
 
+    def requeue_failed(self) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE media_records
+                SET status = ?, error = NULL, updated_at = ?
+                WHERE status = ?
+                """,
+                (
+                    Status.PENDING.value,
+                    _now(),
+                    Status.FAILED.value,
+                ),
+            )
+        return cursor.rowcount
+
     def set_status(
         self, record_id: str, status: Status, *, error: str | None = None
     ) -> MediaRecord:

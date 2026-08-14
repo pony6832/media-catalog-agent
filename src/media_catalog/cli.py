@@ -42,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     resume_parser.add_argument("root", type=Path)
 
+    retry_parser = subparsers.add_parser(
+        "retry-failed", help="Return failed records to pending for another run."
+    )
+    retry_parser.add_argument("root", type=Path)
+
     verify_parser = subparsers.add_parser(
         "verify-sources", help="Verify that cataloged source files are unchanged."
     )
@@ -107,6 +112,12 @@ def main(
             count = database.requeue_processing()
             write_excel(database.list_records(), workspace.excel_path)
             print(f"MEDIA_ANALYSIS_RESUMED count={count}")
+            return 0
+
+        if arguments.command == "retry-failed":
+            count = database.requeue_failed()
+            write_excel(database.list_records(), workspace.excel_path)
+            print(f"MEDIA_ANALYSIS_RETRY_QUEUED count={count}")
             return 0
 
         records = database.list_records()

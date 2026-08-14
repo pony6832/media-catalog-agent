@@ -112,6 +112,20 @@ def test_cli_resume_processing_requeues_only_interrupted_items(
     workbook.close()
 
 
+def test_cli_retry_failed_requeues_failed_items(tmp_path: Path, capsys) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+    workspace = bootstrap_workspace(root).workspace
+    database = CatalogDatabase(workspace.database_path)
+    record = database.list_records()[0]
+    database.set_status(record.id, Status.FAILED, error="invalid JSON")
+
+    exit_code = main(["retry-failed", str(root)])
+
+    assert exit_code == 0
+    assert "MEDIA_ANALYSIS_RETRY_QUEUED count=1" in capsys.readouterr().out
+    assert database.get_record(record.id).status is Status.PENDING
+
+
 def test_cli_verify_sources_reports_success_and_mismatch(
     tmp_path: Path, capsys
 ) -> None:

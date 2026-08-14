@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .inference import (
     FallbackVideoExtractor,
+    FfmpegImagePreparer,
     LocalAnalyzer,
     McpVideoExtractor,
     Runner,
@@ -111,6 +112,10 @@ def build_local_analyzer(
     return LocalAnalyzer(
         model=model,
         video_extractor=FallbackVideoExtractor(watch, mcp),
+        image_preparer=FfmpegImagePreparer(
+            output_root=analysis_output / "normalized",
+            runner=runner,
+        ),
         ollama_executable=ollama_executable,
         runner=runner,
     )
