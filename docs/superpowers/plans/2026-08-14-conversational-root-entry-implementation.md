@@ -108,7 +108,7 @@ class MediaWorkspace:
         )
 ```
 
-Implement `is_reparse_point()` with `os.lstat()` and `stat.FILE_ATTRIBUTE_REPARSE_POINT` when `st_file_attributes` is available. `ensure_directories()` must call `mkdir(parents=True, exist_ok=True)` for the six result directories, then create and remove a uniquely named write probe inside `result_root`; convert `OSError` to `WorkspacePathError` without deleting any existing directory.
+Implement `is_reparse_point()` with `os.lstat()` and `stat.FILE_ATTRIBUTE_REPARSE_POINT` when `st_file_attributes` is available. `ensure_directories()` must call `mkdir(parents=True, exist_ok=True)` for `result_root` and its four fixed subdirectories, then create and remove a uniquely named write probe inside `result_root`; convert `OSError` to `WorkspacePathError` without deleting any existing directory.
 
 - [ ] **Step 4: Run workspace tests**
 
