@@ -6,6 +6,7 @@ from typing import Iterable
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from .models import MediaRecord, Status
 
@@ -49,13 +50,14 @@ _MEDIA_LABELS = {
 def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
     destination = Path(output_path).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    catalog_records = list(records)
 
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "媒體清冊"
     sheet.append(CATALOG_HEADERS)
 
-    for record in records:
+    for record in catalog_records:
         sheet.append(
             (
                 _STATUS_LABELS[record.status],
@@ -76,6 +78,19 @@ def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
                 record.error,
             )
         )
+
+    if catalog_records:
+        review_validation = DataValidation(
+            type="list",
+            formula1='"待確認,已審核"',
+            allow_blank=False,
+            showDropDown=False,
+        )
+        review_validation.errorTitle = "無效狀態"
+        review_validation.error = "請從下拉選單選擇待確認或已審核。"
+        review_validation.showErrorMessage = True
+        sheet.add_data_validation(review_validation)
+        review_validation.add(f"A2:A{len(catalog_records) + 1}")
 
     header_fill = PatternFill("solid", fgColor="1F4E78")
     for cell in sheet[1]:
