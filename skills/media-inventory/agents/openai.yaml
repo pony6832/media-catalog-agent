@@ -1,4 +1,4 @@
 interface:
-  display_name: "媒體整理與搜尋"
-  short_description: "貼上本機資料夾路徑，立即建立或更新安全且可重跑的媒體清冊"
-  default_prompt: "使用 $media-inventory 掃描這個本機資料夾並建立媒體整理成果："
+  display_name: "媒體資料夾整理"
+  short_description: "建立本機照片影片清冊，並執行離線預覽描述、亮點與關鍵字分析"
+  default_prompt: "使用 $media-inventory 整理並分析我貼上的本機媒體資料夾。"

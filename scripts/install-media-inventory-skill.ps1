@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
 $backupPath = $null
 
 try {
@@ -70,6 +71,39 @@ try {
         throw "安裝本機 media-catalog 專案失敗，exit=$LASTEXITCODE"
     }
 
+    $nodeCommand = @(Get-Command node -CommandType Application -ErrorAction Stop)[0]
+    $npmCommand = @(Get-Command npm.cmd -CommandType Application -ErrorAction Stop)[0]
+    $nodeVersion = (& $nodeCommand.Source --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v(?<major>\d+)\.') {
+        throw "Unable to read Node.js version: $nodeVersion"
+    }
+    if ([int]$Matches['major'] -lt 18) {
+        throw "Node.js 18 or newer is required: $nodeVersion"
+    }
+
+    $mcpRoot = Join-Path $destinationFull '.tools\mcp-video-analyzer'
+    New-Item -ItemType Directory -Path $mcpRoot -Force | Out-Null
+    & $npmCommand.Source install --prefix $mcpRoot --no-save --omit=dev 'mcp-video-analyzer@0.8.0'
+    if ($LASTEXITCODE -ne 0) {
+        throw "mcp-video-analyzer install failed: exit=$LASTEXITCODE"
+    }
+
+    $mcpExecutable = Join-Path $mcpRoot 'node_modules\.bin\mcp-video-analyzer.cmd'
+    $mcpPackagePath = Join-Path $mcpRoot 'node_modules\mcp-video-analyzer\package.json'
+    if (-not (Test-Path -LiteralPath $mcpExecutable -PathType Leaf)) {
+        throw "Missing mcp-video-analyzer executable: $mcpExecutable"
+    }
+    if (-not (Test-Path -LiteralPath $mcpPackagePath -PathType Leaf)) {
+        throw "Missing mcp-video-analyzer package metadata: $mcpPackagePath"
+    }
+    $mcpPackage = Get-Content -LiteralPath $mcpPackagePath -Raw | ConvertFrom-Json
+    if (
+        $mcpPackage.name -ne 'mcp-video-analyzer' -or
+        $mcpPackage.version -ne '0.8.0'
+    ) {
+        throw "Unexpected mcp-video-analyzer package: name=$($mcpPackage.name) version=$($mcpPackage.version)"
+    }
+
     $quickValidator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'
     if (-not (Test-Path -LiteralPath $quickValidator -PathType Leaf)) {
         throw "找不到 Skill 驗證器：$quickValidator"
@@ -85,6 +119,10 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $smokeRoot 'sample.jpg'), [byte[]](1, 2, 3))
 
     $launcher = Join-Path $destinationFull 'scripts\run_media_catalog.ps1'
+    $analysisLauncher = Join-Path $destinationFull 'scripts\run_media_analysis.ps1'
+    if (-not (Test-Path -LiteralPath $analysisLauncher -PathType Leaf)) {
+        throw "Missing media analysis launcher: $analysisLauncher"
+    }
     $smokeOutput = & $launcher -RootPath $smokeRoot 2>&1
     $smokeExitCode = $LASTEXITCODE
     if ($smokeExitCode -ne 0 -or ($smokeOutput -join "`n") -notmatch 'MEDIA_CATALOG_READY') {
