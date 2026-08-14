@@ -1,4 +1,5 @@
 .worktrees/
+.tools/
 __pycache__/
 .pytest_cache/
 *.py[cod]

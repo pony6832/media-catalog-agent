@@ -116,6 +116,37 @@ class CatalogDatabase:
         assert record is not None
         return record
 
+    def save_analysis(
+        self,
+        record_id: str,
+        *,
+        description: str,
+        highlights: tuple[str, ...],
+        keywords: tuple[str, ...],
+    ) -> MediaRecord:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE media_records
+                SET status = ?, description = ?, highlights_json = ?,
+                    keywords_json = ?, error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    Status.PROCESSING.value,
+                    description,
+                    json.dumps(highlights, ensure_ascii=False),
+                    json.dumps(keywords, ensure_ascii=False),
+                    _now(),
+                    record_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"Unknown media record: {record_id}")
+        record = self.get_record(record_id)
+        assert record is not None
+        return record
+
     @staticmethod
     def _to_record(row: sqlite3.Row) -> MediaRecord:
         return MediaRecord(
