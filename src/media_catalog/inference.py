@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 from urllib.parse import urlparse
 
 
@@ -36,6 +36,36 @@ class VideoEvidence:
     warnings: tuple[str, ...] = ()
 
 
+class VideoExtractor(Protocol):
+    def extract(self, source: str | Path) -> VideoEvidence:
+        raise NotImplementedError
+
+
+class FallbackVideoExtractor:
+    def __init__(
+        self,
+        primary: VideoExtractor | None,
+        fallback: VideoExtractor | None,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def extract(self, source: str | Path) -> VideoEvidence:
+        failures: list[str] = []
+        for name, extractor in (
+            ("watch", self.primary),
+            ("mcp", self.fallback),
+        ):
+            if extractor is None:
+                failures.append(f"{name} unavailable")
+                continue
+            try:
+                return extractor.extract(source)
+            except AnalysisError as error:
+                failures.append(f"{name}: {error}")
+        raise AnalysisError("; ".join(failures))
+
+
 def _local_media_path(source: str | Path) -> Path:
     raw = str(source)
     if urlparse(raw).scheme.lower() in {"http", "https"}:
@@ -60,6 +90,8 @@ def _offline_environment() -> dict[str, str]:
         "GROQ_API_KEY",
         "GEMINI_API_KEY",
         "ANTHROPIC_API_KEY",
+        "TWELVELABS_API_KEY",
+        "MCP_WRITE_SIDECARS",
     ):
         environment.pop(key, None)
     environment.update(

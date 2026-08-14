@@ -6,10 +6,30 @@ import pytest
 
 from media_catalog.inference import (
     AnalysisError,
+    FallbackVideoExtractor,
     LocalAnalyzer,
     McpVideoExtractor,
+    VideoEvidence,
     WatchVideoExtractor,
 )
+
+
+class RecordingExtractor:
+    def __init__(self, evidence: VideoEvidence) -> None:
+        self.evidence = evidence
+        self.sources: list[Path] = []
+
+    def extract(self, source: str | Path) -> VideoEvidence:
+        self.sources.append(Path(source).resolve())
+        return self.evidence
+
+
+class FailingExtractor:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def extract(self, _: str | Path) -> VideoEvidence:
+        raise AnalysisError(self.message)
 
 
 def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) -> None:
@@ -39,7 +59,9 @@ def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) 
     assert evidence.frames[0].name == "frame_0001.jpg"
 
 
-def test_mcp_extractor_is_pinned_offline_and_normalizes_output(tmp_path: Path) -> None:
+def test_mcp_extractor_is_pinned_offline_and_normalizes_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
     package_root = tmp_path / "mcp-package"
@@ -52,6 +74,16 @@ def test_mcp_extractor_is_pinned_offline_and_normalizes_output(tmp_path: Path) -
         encoding="utf-8",
     )
     captured: dict[str, object] = {}
+    cloud_keys = (
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "TWELVELABS_API_KEY",
+        "MCP_WRITE_SIDECARS",
+    )
+    for key in cloud_keys:
+        monkeypatch.setenv(key, "must-not-leak")
 
     def runner(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["arguments"] = arguments
@@ -86,9 +118,59 @@ def test_mcp_extractor_is_pinned_offline_and_normalizes_output(tmp_path: Path) -
     assert "metadata,frames,ocrResults" in arguments
     assert isinstance(environment, dict)
     assert environment["npm_config_offline"] == "true"
+    assert all(key not in environment for key in cloud_keys)
     assert captured["encoding"] == "utf-8"
     assert evidence.frames[0].name == "scene_001.jpg"
     assert evidence.ocr_text == ("門牌 25 號",)
+
+
+def test_fallback_video_extractor_does_not_call_mcp_when_watch_succeeds(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    primary = RecordingExtractor(
+        VideoEvidence((tmp_path / "watch.jpg",), {"backend": "watch"})
+    )
+    fallback = RecordingExtractor(
+        VideoEvidence((tmp_path / "mcp.jpg",), {"backend": "mcp"})
+    )
+
+    evidence = FallbackVideoExtractor(primary, fallback).extract(source)
+
+    assert evidence.metadata["backend"] == "watch"
+    assert primary.sources == [source.resolve()]
+    assert fallback.sources == []
+
+
+def test_fallback_video_extractor_calls_mcp_once_after_watch_failure(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    primary = FailingExtractor("watch produced no frames")
+    fallback = RecordingExtractor(
+        VideoEvidence((tmp_path / "mcp.jpg",), {"backend": "mcp"})
+    )
+
+    evidence = FallbackVideoExtractor(primary, fallback).extract(source)
+
+    assert evidence.metadata["backend"] == "mcp"
+    assert fallback.sources == [source.resolve()]
+
+
+def test_fallback_video_extractor_reports_both_failures(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    with pytest.raises(AnalysisError) as captured:
+        FallbackVideoExtractor(
+            FailingExtractor("no watch frames"),
+            FailingExtractor("mcp crashed"),
+        ).extract(source)
+
+    assert "watch: no watch frames" in str(captured.value)
+    assert "mcp: mcp crashed" in str(captured.value)
 
 
 def test_video_extractors_reject_urls_and_unpinned_latest(tmp_path: Path) -> None:
