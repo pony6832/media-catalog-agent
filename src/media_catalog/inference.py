@@ -298,8 +298,10 @@ class LocalAnalyzer:
             ocr_text = evidence.ocr_text
 
         prompt = (
-            "只根據提供的本機影像輸出 JSON。欄位必須是 description 字串、"
-            "highlights 字串陣列、keywords 字串陣列。不要加入 Markdown。"
+            "請只輸出單一 JSON 物件，並根據提供的本機影像填寫內容。"
+            "description 必須是非空白繁體中文字串；highlights 與 keywords "
+            "必須是繁體中文字串陣列。即使畫面簡單也要提供具體描述與至少一個"
+            "關鍵字。不要加入 Markdown 或額外欄位。"
         )
         if ocr_text:
             prompt += " 已擷取 OCR 文字：" + "；".join(ocr_text)

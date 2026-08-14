@@ -216,3 +216,31 @@ def test_local_analyzer_rejects_malformed_model_json(tmp_path: Path) -> None:
     assert "json" in captured
     assert "--hidethinking" in captured
     assert "--nowordwrap" in captured
+
+
+def test_local_analyzer_uses_readable_strict_schema_prompt(tmp_path: Path) -> None:
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"photo")
+    captured_prompt = ""
+
+    def runner(
+        arguments: list[str], **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_prompt
+        captured_prompt = arguments[-1]
+        payload = {
+            "description": "紅色色塊",
+            "highlights": ["單色畫面"],
+            "keywords": ["紅色"],
+        }
+        return subprocess.CompletedProcess(
+            arguments, 0, stdout=json.dumps(payload), stderr=""
+        )
+
+    LocalAnalyzer(model="qwen3-vl:8b", runner=runner).analyze(photo)
+
+    assert "請只輸出" in captured_prompt
+    assert all(
+        field in captured_prompt
+        for field in ("description", "highlights", "keywords")
+    )
