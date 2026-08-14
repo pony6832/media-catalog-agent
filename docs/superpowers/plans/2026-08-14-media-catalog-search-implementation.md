@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11+, pytest, openpyxl, ExifTool CLI, ffmpeg/ffprobe CLI, local Ollama CLI, SQLite FTS5, a user-provided local sentence-transformers embedding model.
 
+**Lightweight first batch:** Implement Tasks 1-3 first. This delivers the durable catalog, recursive Excel queue, and normalized local video-extraction boundary before metadata mutation or semantic indexing is enabled.
+
 ## Global Constraints
 
 - Windows-first; use `pathlib` and never shell-concatenate media paths.
@@ -76,8 +78,8 @@ def test_scan_recurses_and_does_not_duplicate(tmp_path):
 
 - [ ] **Step 1: Write failing tests** using a fake analyzer; assert unselected pending records are untouched and malformed model JSON changes selected records to `FAILED` with an error.
 - [ ] **Step 2: Run** `pytest tests/test_inference.py tests/test_processor.py -v`; expect failure.
-- [ ] **Step 3: Implement** a subprocess-only Ollama adapter (`ollama run <configured-model>`) with JSON-only prompt/output validation. For video, call the installed `watch-skill` CLI to create representative local frames; for stills analyze the original image. Pass argument lists to `subprocess.run`, set timeouts, and never use network clients. Require configuration paths/model names to exist before work starts.
-- [ ] **Step 4: Run** tests with faked subprocess output; expect PASS. Add a dry-run command that proves no media write occurs.
+- [ ] **Step 3: Implement** a subprocess-only Ollama adapter (`ollama run <configured-model>`) with JSON-only prompt/output validation. For video, expose one normalized extractor interface with two selectable local backends: (a) installed `watch-skill`, whose underlying implementation is `claude-video`, and (b) a preinstalled, pinned `guimatheus92/mcp-video-analyzer` CLI. Do not invoke `watch-skill` and `claude-video` separately. Restrict the MCP analyzer to local paths and local metadata/frames/OCR fields; reject URL sources, `@latest`, cloud summaries, and external transcription fallbacks. Pass argument lists to `subprocess.run`, set timeouts, and never use network clients. Require configuration paths/model names to exist before work starts.
+- [ ] **Step 4: Run** tests with controlled subprocess runners; expect PASS. Cover both normalized video backends, URL rejection, pinned-command validation, malformed JSON, and a dry-run command that proves no media write occurs.
 - [ ] **Step 5: Commit** with `feat: add offline selected-media analysis`.
 
 ### Task 4: Backup, metadata verification, and Markdown sidecars
