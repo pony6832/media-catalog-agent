@@ -254,7 +254,11 @@ print(
 workbook.close()
 raise SystemExit(0 if valid else 1)
 '@
-& $python -c $checkScript $workbook
+$encodedCheck = [Convert]::ToBase64String(
+    [Text.Encoding]::UTF8.GetBytes($checkScript)
+)
+& $python -c "import base64,sys; payload=sys.argv.pop(1); exec(base64.b64decode(payload))" `
+  $encodedCheck $workbook
 & $python -m media_catalog.cli verify-sources $root
 ```
 

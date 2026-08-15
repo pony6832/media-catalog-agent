@@ -45,3 +45,38 @@ def test_write_excel_labels_analyzed_records_for_review(tmp_path: Path) -> None:
     assert sheet.cell(2, 5).value == "紅色馬年賀卡。"
     assert sheet.cell(2, 9).value is not None
     workbook.close()
+
+
+def test_write_excel_adds_review_dropdown_to_status_rows(tmp_path: Path) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    first_path = tmp_path / "first.png"
+    second_path = tmp_path / "second.png"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    first = database.upsert_discovered(first_path, "first", "image/png")
+    second = database.upsert_discovered(second_path, "second", "image/png")
+
+    saved_path = write_excel([first, second], tmp_path / "媒體清冊.xlsx")
+
+    workbook = load_workbook(saved_path)
+    sheet = workbook["媒體清冊"]
+    validations = list(sheet.data_validations.dataValidation)
+    assert len(validations) == 1
+    validation = validations[0]
+    assert validation.type == "list"
+    assert validation.formula1 == '"待確認,已審核"'
+    assert str(validation.sqref) == "A2:A3"
+    assert validation.showDropDown is False
+    workbook.close()
+
+
+def test_write_excel_omits_review_dropdown_for_empty_catalog(
+    tmp_path: Path,
+) -> None:
+    saved_path = write_excel([], tmp_path / "媒體清冊.xlsx")
+
+    workbook = load_workbook(saved_path)
+    sheet = workbook["媒體清冊"]
+    assert list(sheet.data_validations.dataValidation) == []
+    assert sheet.max_row == 1
+    workbook.close()
