@@ -7,7 +7,7 @@ from pathlib import Path
 from .database import CatalogDatabase
 from .excel_catalog import write_excel
 from .inference import AnalysisError
-from .models import MediaRecord, Status
+from .models import MediaRecord, Status, has_complete_analysis
 from .processor import Analyzer
 from .source_guard import (
     SourceIntegrityError,
@@ -16,6 +16,9 @@ from .source_guard import (
     verify_record_source,
 )
 from .workspace import MediaWorkspace
+
+
+ProgressCallback = Callable[[int, int, MediaRecord], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,7 @@ def analyze_pending(
     analyzer: Analyzer,
     *,
     excel_writer: Callable[[Iterable[MediaRecord], Path], Path] = write_excel,
+    progress: ProgressCallback | None = None,
 ) -> BatchAnalysisResult:
     database = CatalogDatabase(workspace.database_path)
     initial_records = database.list_records()
@@ -38,7 +42,8 @@ def analyze_pending(
         record for record in initial_records if record.status is Status.PENDING
     ]
     analyzed = 0
-    failed = 0
+    completed = 0
+    total = len(pending)
 
     for record in pending:
         try:
@@ -50,8 +55,12 @@ def analyze_pending(
                 Status.FAILED,
                 error=sanitize_error(str(error)),
             )
-            failed += 1
             excel_writer(database.list_records(), workspace.excel_path)
+            completed += 1
+            if progress is not None:
+                current = database.get_record(record.id)
+                assert current is not None
+                progress(completed, total, current)
             continue
 
         database.set_status(record.id, Status.PROCESSING)
@@ -65,7 +74,6 @@ def analyze_pending(
                 Status.FAILED,
                 error=sanitize_error(str(error)),
             )
-            failed += 1
         else:
             database.save_analysis(
                 record.id,
@@ -75,9 +83,16 @@ def analyze_pending(
             )
             analyzed += 1
         excel_writer(database.list_records(), workspace.excel_path)
+        completed += 1
+        if progress is not None:
+            current = database.get_record(record.id)
+            assert current is not None
+            progress(completed, total, current)
 
-    remaining = len(
-        database.list_by_status((Status.PENDING, Status.PROCESSING))
+    failed = len(database.list_by_status((Status.FAILED,)))
+    remaining = sum(
+        not has_complete_analysis(record)
+        for record in database.list_records()
     )
     return BatchAnalysisResult(
         analyzed=analyzed,

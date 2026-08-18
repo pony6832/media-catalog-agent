@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 
 from media_catalog.database import CatalogDatabase
@@ -80,3 +82,21 @@ def test_write_excel_omits_review_dropdown_for_empty_catalog(
     assert list(sheet.data_validations.dataValidation) == []
     assert sheet.max_row == 1
     workbook.close()
+
+
+def test_write_excel_preserves_existing_workbook_when_atomic_replace_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "媒體清冊.xlsx"
+    output.write_bytes(b"existing-workbook")
+
+    def locked_replace(*_args, **_kwargs):
+        raise PermissionError("workbook is open")
+
+    monkeypatch.setattr(os, "replace", locked_replace)
+
+    with pytest.raises(PermissionError, match="open"):
+        write_excel([], output)
+
+    assert output.read_bytes() == b"existing-workbook"
+    assert list(tmp_path.glob(".媒體清冊.*.tmp.xlsx")) == []

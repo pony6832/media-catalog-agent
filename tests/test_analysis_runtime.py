@@ -49,7 +49,12 @@ def _workspace(tmp_path: Path) -> MediaWorkspace:
     return workspace
 
 
-def _runner(*, watch_exit: int = 0, model: str = "Qwen3-vl:8b-instruct"):
+def _runner(
+    *,
+    watch_exit: int = 0,
+    ffmpeg_exit: int = 0,
+    model: str = "Qwen3-vl:8b-instruct",
+):
     calls: list[list[str]] = []
 
     def run(
@@ -62,6 +67,13 @@ def _runner(*, watch_exit: int = 0, model: str = "Qwen3-vl:8b-instruct"):
                 0,
                 stdout=f"NAME ID SIZE MODIFIED\n{model} abc 6.1 GB now\n",
                 stderr="",
+            )
+        if arguments[1:] == ["-version"]:
+            return subprocess.CompletedProcess(
+                arguments,
+                ffmpeg_exit,
+                stdout="ffmpeg version 7.1" if ffmpeg_exit == 0 else "",
+                stderr="ffmpeg unavailable" if ffmpeg_exit else "",
             )
         if arguments[-1] == "--check":
             return subprocess.CompletedProcess(
@@ -86,6 +98,7 @@ def test_build_runtime_resolves_watch_and_pinned_private_mcp(
         runner=runner,
         ollama_executable="ollama.exe",
         python_executable="python.exe",
+        ffmpeg_executable="ffmpeg.exe",
     )
 
     extractor = analyzer.video_extractor
@@ -96,7 +109,8 @@ def test_build_runtime_resolves_watch_and_pinned_private_mcp(
     assert isinstance(extractor.fallback, McpVideoExtractor)
     assert extractor.fallback.expected_version == "0.8.0"
     assert calls[0] == ["ollama.exe", "list"]
-    assert calls[1][-1] == "--check"
+    assert calls[1] == ["ffmpeg.exe", "-version"]
+    assert calls[2][-1] == "--check"
 
 
 def test_build_runtime_omits_watch_when_its_preflight_fails(
@@ -137,6 +151,20 @@ def test_build_runtime_rejects_a_missing_model(tmp_path: Path) -> None:
     runner, _ = _runner(model="qwen3.5:9b")
 
     with pytest.raises(RuntimePreflightError, match="Qwen3-vl:8b-instruct"):
+        build_local_analyzer(
+            skill_root=_skill_tree(tmp_path),
+            workspace=_workspace(tmp_path),
+            model="Qwen3-vl:8b-instruct",
+            runner=runner,
+        )
+
+
+def test_build_runtime_rejects_missing_ffmpeg_before_analyzing_rows(
+    tmp_path: Path,
+) -> None:
+    runner, _ = _runner(ffmpeg_exit=1)
+
+    with pytest.raises(RuntimePreflightError, match="FFmpeg"):
         build_local_analyzer(
             skill_root=_skill_tree(tmp_path),
             workspace=_workspace(tmp_path),

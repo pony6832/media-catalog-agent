@@ -30,3 +30,15 @@ class MediaRecord:
     discovered_at: str | None = None
     updated_at: str | None = None
 
+
+def has_complete_analysis(record: MediaRecord) -> bool:
+    return (
+        record.status in {Status.ANALYZED, Status.COMPLETED}
+        and isinstance(record.description, str)
+        and bool(record.description.strip())
+        and bool(record.highlights)
+        and all(item.strip() for item in record.highlights)
+        and bool(record.keywords)
+        and all(item.strip() for item in record.keywords)
+    )
+

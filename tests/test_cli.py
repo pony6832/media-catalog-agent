@@ -1,17 +1,23 @@
 from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 
 from media_catalog.bootstrap import bootstrap_workspace
 from media_catalog.cli import main
 from media_catalog.database import CatalogDatabase
-from media_catalog.inference import Analysis
+from media_catalog.inference import Analysis, AnalysisError
 from media_catalog.models import Status
 
 
 class SuccessfulAnalyzer:
     def analyze(self, _: Path) -> Analysis:
         return Analysis("賀卡預覽", ("紅色",), ("賀卡",))
+
+
+class FailingAnalyzer:
+    def analyze(self, _: Path) -> Analysis:
+        raise AnalysisError("model stopped")
 
 
 def _catalog_root_with_one_pending_photo(tmp_path: Path) -> Path:
@@ -68,10 +74,123 @@ def test_cli_analyze_all_prints_fixed_summary(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.err == ""
-    assert captured.out.startswith(
+    assert captured.out.splitlines()[-1].startswith(
         "MEDIA_ANALYSIS_READY analyzed=1 failed=0 skipped=0 remaining=0"
     )
     assert f"catalog={root / '媒體整理成果' / '媒體清冊.xlsx'}" in captured.out
+
+
+def test_cli_analyze_all_recovers_interrupted_and_failed_rows(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "interrupted.jpg").write_bytes(b"one")
+    (root / "failed.jpg").write_bytes(b"two")
+    workspace = bootstrap_workspace(root).workspace
+    database = CatalogDatabase(workspace.database_path)
+    records = database.list_records()
+    database.set_status(records[0].id, Status.PROCESSING)
+    database.set_status(records[1].id, Status.FAILED, error="old failure")
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "recovered_processing=1" in captured.out
+    assert "retried_failed=1" in captured.out
+    assert all(
+        record.status is Status.ANALYZED
+        for record in database.list_records()
+    )
+
+
+def test_cli_analyze_all_does_not_report_ready_with_blank_failed_rows(
+    tmp_path: Path, capsys
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: FailingAnalyzer(),
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert "MEDIA_ANALYSIS_INCOMPLETE" in captured.out
+    assert "failed=1" in captured.out
+    assert "remaining=1" in captured.out
+
+
+def test_cli_analyze_all_streams_progress_for_slow_computers(
+    tmp_path: Path, capsys
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    assert exit_code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("MEDIA_ANALYSIS_PROGRESS completed=1 total=1")
+    assert "status=analyzed" in lines[0]
+    assert lines[-1].startswith("MEDIA_ANALYSIS_READY")
+
+
+def test_cli_analyze_all_rebuilds_stale_excel_from_completed_database(
+    tmp_path: Path, capsys
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+    workspace = bootstrap_workspace(root).workspace
+    database = CatalogDatabase(workspace.database_path)
+    record = database.list_records()[0]
+    database.save_analysis(
+        record.id,
+        description="資料庫完整描述",
+        highlights=("完整重點",),
+        keywords=("完整關鍵字",),
+    )
+    workbook = load_workbook(workspace.excel_path)
+    sheet = workbook.active
+    sheet.cell(2, 1).value = "處理中"
+    for column in (5, 6, 7):
+        sheet.cell(2, column).value = None
+    workbook.save(workspace.excel_path)
+    workbook.close()
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    assert exit_code == 0
+    assert "MEDIA_ANALYSIS_READY" in capsys.readouterr().out
+    workbook = load_workbook(workspace.excel_path, read_only=True)
+    row = [workbook.active.cell(2, column).value for column in range(1, 8)]
+    workbook.close()
+    assert row[0] == "待確認"
+    assert row[4:7] == ["資料庫完整描述", "完整重點", "完整關鍵字"]
+
+
+@pytest.mark.parametrize("command", ["start", "resume-processing", "retry-failed"])
+def test_cli_mutating_commands_respect_analysis_lock(
+    tmp_path: Path, capsys, command: str
+) -> None:
+    from media_catalog.run_lock import analysis_run_lock
+
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+    workspace = bootstrap_workspace(root).workspace
+
+    with analysis_run_lock(workspace.result_root / ".analysis.lock"):
+        exit_code = main([command, str(root)])
+
+    assert exit_code == 2
+    assert "已有分析程序" in capsys.readouterr().err
 
 
 def test_cli_reports_runtime_preflight_failure(tmp_path: Path, capsys) -> None:
@@ -91,6 +210,37 @@ def test_cli_reports_runtime_preflight_failure(tmp_path: Path, capsys) -> None:
     assert exit_code == 2
     assert captured.out == ""
     assert "MEDIA_ANALYSIS_ERROR 找不到模型" in captured.err
+
+
+def test_cli_preflight_failure_preserves_recoverable_rows(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "interrupted.jpg").write_bytes(b"one")
+    (root / "failed.jpg").write_bytes(b"two")
+    workspace = bootstrap_workspace(root).workspace
+    database = CatalogDatabase(workspace.database_path)
+    records = database.list_records()
+    database.set_status(records[0].id, Status.PROCESSING)
+    database.set_status(records[1].id, Status.FAILED, error="old failure")
+
+    def unavailable(**_kwargs):
+        from media_catalog.analysis_runtime import RuntimePreflightError
+
+        raise RuntimePreflightError("FFmpeg 無法使用")
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=unavailable,
+    )
+
+    assert exit_code == 2
+    assert [record.status for record in database.list_records()] == [
+        Status.PROCESSING,
+        Status.FAILED,
+    ]
+    assert "MEDIA_ANALYSIS_ERROR FFmpeg 無法使用" in capsys.readouterr().err
 
 
 def test_cli_resume_processing_requeues_only_interrupted_items(

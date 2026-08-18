@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterable
+import uuid
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -104,6 +106,18 @@ def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     sheet.sheet_view.showGridLines = False
-    workbook.save(destination)
-    workbook.close()
+    temporary = destination.with_name(
+        f".{destination.stem}.{uuid.uuid4().hex}.tmp{destination.suffix}"
+    )
+    try:
+        workbook.save(temporary)
+        workbook.close()
+        os.replace(temporary, destination)
+    finally:
+        workbook.close()
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
     return destination

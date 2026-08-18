@@ -430,17 +430,31 @@ class LocalAnalyzer:
         description = payload.get("description") if isinstance(payload, dict) else None
         highlights = payload.get("highlights") if isinstance(payload, dict) else None
         keywords = payload.get("keywords") if isinstance(payload, dict) else None
+        cleaned_highlights = (
+            tuple(item.strip() for item in highlights if item.strip())
+            if isinstance(highlights, list)
+            and all(isinstance(item, str) for item in highlights)
+            else ()
+        )
+        cleaned_keywords = (
+            tuple(item.strip() for item in keywords if item.strip())
+            if isinstance(keywords, list)
+            and all(isinstance(item, str) for item in keywords)
+            else ()
+        )
         if (
             not isinstance(description, str)
             or not description.strip()
             or not isinstance(highlights, list)
             or not all(isinstance(item, str) for item in highlights)
+            or not cleaned_highlights
             or not isinstance(keywords, list)
             or not all(isinstance(item, str) for item in keywords)
+            or not cleaned_keywords
         ):
             raise AnalysisError("Ollama JSON does not match the analysis schema")
         return Analysis(
             description=description.strip(),
-            highlights=tuple(item.strip() for item in highlights if item.strip()),
-            keywords=tuple(item.strip() for item in keywords if item.strip()),
+            highlights=cleaned_highlights,
+            keywords=cleaned_keywords,
         )

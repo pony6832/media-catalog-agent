@@ -252,6 +252,23 @@ def test_local_analyzer_uses_readable_strict_schema_prompt(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"description": "描述", "highlights": [], "keywords": ["關鍵字"]},
+        {"description": "描述", "highlights": ["重點"], "keywords": []},
+        {
+            "description": "描述",
+            "highlights": ["   "],
+            "keywords": ["關鍵字"],
+        },
+    ],
+)
+def test_local_analyzer_rejects_blank_required_analysis_fields(payload) -> None:
+    with pytest.raises(AnalysisError, match="schema"):
+        LocalAnalyzer._parse_analysis(json.dumps(payload, ensure_ascii=False))
+
+
 def test_ffmpeg_preparer_creates_a_bounded_preview_without_source_change(
     tmp_path: Path,
 ) -> None:
