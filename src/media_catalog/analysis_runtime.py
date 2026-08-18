@@ -59,6 +59,7 @@ def build_local_analyzer(
     runner: Runner = subprocess.run,
     ollama_executable: str = "ollama",
     python_executable: str = sys.executable,
+    ffmpeg_executable: str = "ffmpeg",
 ) -> LocalAnalyzer:
     skill_root = Path(skill_root).resolve()
     model_check = _preflight(runner, [ollama_executable, "list"])
@@ -67,6 +68,11 @@ def build_local_analyzer(
         raise RuntimePreflightError(f"Ollama 無法使用：{detail}")
     if model.casefold() not in _installed_models(model_check.stdout):
         raise RuntimePreflightError(f"找不到本機 Ollama 模型：{model}")
+
+    ffmpeg_check = _preflight(runner, [ffmpeg_executable, "-version"])
+    if ffmpeg_check.returncode != 0:
+        detail = ffmpeg_check.stderr.strip() or "unknown error"
+        raise RuntimePreflightError(f"FFmpeg 無法使用：{detail}")
 
     analysis_output = workspace.temp_dir / "analysis"
     watch_scripts = skill_root.parent / "watch" / "scripts"
@@ -114,6 +120,7 @@ def build_local_analyzer(
         video_extractor=FallbackVideoExtractor(watch, mcp),
         image_preparer=FfmpegImagePreparer(
             output_root=analysis_output / "normalized",
+            ffmpeg_executable=ffmpeg_executable,
             runner=runner,
         ),
         ollama_executable=ollama_executable,

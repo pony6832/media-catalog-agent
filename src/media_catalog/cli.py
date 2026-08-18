@@ -12,6 +12,7 @@ from .database import CatalogDatabase
 from .excel_catalog import write_excel
 from .inference import LocalAnalyzer
 from .models import Status
+from .run_lock import AnalysisAlreadyRunningError, analysis_run_lock
 from .source_guard import (
     SourceIntegrityError,
     capture_source,
@@ -72,8 +73,14 @@ def main(
 
     if arguments.command == "start":
         try:
-            result = bootstrap_workspace(arguments.root)
-        except WorkspacePathError as error:
+            workspace = MediaWorkspace.from_root(arguments.root)
+            with analysis_run_lock(workspace.result_root / ".analysis.lock"):
+                result = bootstrap_workspace(arguments.root)
+        except (
+            WorkspacePathError,
+            PermissionError,
+            AnalysisAlreadyRunningError,
+        ) as error:
             print(f"MEDIA_CATALOG_ERROR {error}", file=sys.stderr)
             return 2
 
@@ -89,37 +96,76 @@ def main(
 
     try:
         workspace = _existing_workspace(arguments.root)
-        database = CatalogDatabase(workspace.database_path)
 
         if arguments.command == "analyze-all":
-            analyzer = runtime_builder(
-                skill_root=arguments.skill_root,
-                workspace=workspace,
-                model=arguments.model,
-            )
-            result = analyze_pending(workspace, analyzer)
-            print(
+            lock_path = workspace.result_root / ".analysis.lock"
+            with analysis_run_lock(lock_path):
+                database = CatalogDatabase(workspace.database_path)
+                analyzer = runtime_builder(
+                    skill_root=arguments.skill_root,
+                    workspace=workspace,
+                    model=arguments.model,
+                )
+                recovered_incomplete = database.requeue_incomplete_analysis()
+                recovered_processing = database.requeue_processing()
+                retried_failed = database.requeue_failed()
+                if (
+                    recovered_incomplete
+                    or recovered_processing
+                    or retried_failed
+                ):
+                    write_excel(database.list_records(), workspace.excel_path)
+
+                def report_progress(
+                    completed: int, total: int, record
+                ) -> None:
+                    print(
+                        "MEDIA_ANALYSIS_PROGRESS"
+                        f" completed={completed}"
+                        f" total={total}"
+                        f" status={record.status.value}"
+                        f" item={record.path.name}",
+                        flush=True,
+                    )
+
+                result = analyze_pending(
+                    workspace, analyzer, progress=report_progress
+                )
+                write_excel(database.list_records(), workspace.excel_path)
+            marker = (
                 "MEDIA_ANALYSIS_READY"
-                f" analyzed={result.analyzed}"
+                if result.remaining == 0
+                else "MEDIA_ANALYSIS_INCOMPLETE"
+            )
+            print(
+                marker + f" analyzed={result.analyzed}"
                 f" failed={result.failed}"
                 f" skipped={result.skipped}"
                 f" remaining={result.remaining}"
+                f" recovered_incomplete={recovered_incomplete}"
+                f" recovered_processing={recovered_processing}"
+                f" retried_failed={retried_failed}"
                 f" catalog={workspace.excel_path}"
             )
-            return 0
+            return 0 if result.remaining == 0 else 3
 
         if arguments.command == "resume-processing":
-            count = database.requeue_processing()
-            write_excel(database.list_records(), workspace.excel_path)
+            with analysis_run_lock(workspace.result_root / ".analysis.lock"):
+                database = CatalogDatabase(workspace.database_path)
+                count = database.requeue_processing()
+                write_excel(database.list_records(), workspace.excel_path)
             print(f"MEDIA_ANALYSIS_RESUMED count={count}")
             return 0
 
         if arguments.command == "retry-failed":
-            count = database.requeue_failed()
-            write_excel(database.list_records(), workspace.excel_path)
+            with analysis_run_lock(workspace.result_root / ".analysis.lock"):
+                database = CatalogDatabase(workspace.database_path)
+                count = database.requeue_failed()
+                write_excel(database.list_records(), workspace.excel_path)
             print(f"MEDIA_ANALYSIS_RETRY_QUEUED count={count}")
             return 0
 
+        database = CatalogDatabase(workspace.database_path)
         records = database.list_records()
         for record in records:
             verify_record_source(record, capture_source(record.path))
@@ -131,6 +177,7 @@ def main(
         SourceIntegrityError,
         FileNotFoundError,
         PermissionError,
+        AnalysisAlreadyRunningError,
     ) as error:
         print(f"MEDIA_ANALYSIS_ERROR {error}", file=sys.stderr)
         return 2

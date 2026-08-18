@@ -66,7 +66,12 @@ try {
         throw "找不到私有 Python：$runtimePython"
     }
 
-    & $runtimePython -m pip install $projectRootPath
+    & $runtimePython -m pip install --disable-pip-version-check --no-cache-dir --no-compile 'setuptools>=68'
+    if ($LASTEXITCODE -ne 0) {
+        throw "安裝 setuptools 建置工具失敗，exit=$LASTEXITCODE"
+    }
+
+    & $runtimePython -m pip install --disable-pip-version-check --no-cache-dir --no-compile --no-build-isolation $projectRootPath
     if ($LASTEXITCODE -ne 0) {
         throw "安裝本機 media-catalog 專案失敗，exit=$LASTEXITCODE"
     }
@@ -82,8 +87,9 @@ try {
     }
 
     $mcpRoot = Join-Path $destinationFull '.tools\mcp-video-analyzer'
+    $npmCache = Join-Path $mcpRoot '.npm-cache'
     New-Item -ItemType Directory -Path $mcpRoot -Force | Out-Null
-    & $npmCommand.Source install --prefix $mcpRoot --no-save --omit=dev 'mcp-video-analyzer@0.8.0'
+    & $npmCommand.Source install --prefix $mcpRoot --no-save --omit=dev --cache $npmCache --no-audit --no-fund 'mcp-video-analyzer@0.8.0'
     if ($LASTEXITCODE -ne 0) {
         throw "mcp-video-analyzer install failed: exit=$LASTEXITCODE"
     }

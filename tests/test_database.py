@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from media_catalog.database import CatalogDatabase
@@ -90,3 +91,52 @@ def test_requeue_failed_only_resets_failed_records(tmp_path: Path) -> None:
     assert database.get_record(failed.id).status is Status.PENDING
     assert database.get_record(failed.id).error is None
     assert database.get_record(analyzed.id).status is Status.ANALYZED
+
+
+def test_requeue_incomplete_analysis_repairs_legacy_blank_rows(
+    tmp_path: Path,
+) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    blank_path = tmp_path / "blank.jpg"
+    complete_path = tmp_path / "complete.jpg"
+    blank_path.write_bytes(b"blank")
+    complete_path.write_bytes(b"complete")
+    blank = database.upsert_discovered(blank_path, "blank", "image/jpeg")
+    complete = database.upsert_discovered(
+        complete_path, "complete", "image/jpeg"
+    )
+    database.save_analysis(
+        complete.id,
+        description="完整描述",
+        highlights=("重點",),
+        keywords=("關鍵字",),
+    )
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute(
+            """
+            UPDATE media_records
+            SET status = ?, description = '', highlights_json = '[]',
+                keywords_json = '[]'
+            WHERE id = ?
+            """,
+            (Status.ANALYZED.value, blank.id),
+        )
+
+    assert database.requeue_incomplete_analysis() == 1
+    assert database.get_record(blank.id).status is Status.PENDING
+    assert database.get_record(complete.id).status is Status.ANALYZED
+
+
+def test_requeue_incomplete_analysis_recovers_legacy_skipped_rows(
+    tmp_path: Path,
+) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    media_path = tmp_path / "skipped.jpg"
+    media_path.write_bytes(b"skipped")
+    skipped = database.upsert_discovered(
+        media_path, "skipped", "image/jpeg"
+    )
+    database.set_status(skipped.id, Status.SKIPPED)
+
+    assert database.requeue_incomplete_analysis() == 1
+    assert database.get_record(skipped.id).status is Status.PENDING

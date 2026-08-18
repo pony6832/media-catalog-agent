@@ -51,7 +51,7 @@ def test_analyze_pending_continues_after_one_item_fails_and_updates_excel(
     database = CatalogDatabase(workspace.database_path)
     records = {record.path.name: record for record in database.list_records()}
     assert result == BatchAnalysisResult(
-        analyzed=1, failed=1, skipped=0, remaining=0
+        analyzed=1, failed=1, skipped=0, remaining=1
     )
     assert records["bad.jpg"].status is Status.FAILED
     assert records["good.jpg"].status is Status.ANALYZED
@@ -76,9 +76,29 @@ def test_analyze_pending_skips_analyzed_and_failed_records_on_rerun(
 
     assert first.analyzed == 1
     assert second == BatchAnalysisResult(
-        analyzed=0, failed=0, skipped=2, remaining=0
+        analyzed=0, failed=1, skipped=2, remaining=1
     )
     assert second_analyzer.sources == []
+
+
+def test_analyze_pending_reports_progress_after_each_durable_checkpoint(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(tmp_path, ("first.jpg", "second.jpg"))
+    events: list[tuple[int, int, str, Status]] = []
+
+    analyze_pending(
+        workspace,
+        PathAwareAnalyzer(),
+        progress=lambda completed, total, record: events.append(
+            (completed, total, record.path.name, record.status)
+        ),
+    )
+
+    assert events == [
+        (1, 2, "first.jpg", Status.ANALYZED),
+        (2, 2, "second.jpg", Status.ANALYZED),
+    ]
 
 
 def test_analyze_pending_preserves_source_snapshot(tmp_path: Path) -> None:

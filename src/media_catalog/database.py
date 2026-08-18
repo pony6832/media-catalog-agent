@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import MediaRecord, Status
+from .models import MediaRecord, Status, has_complete_analysis
 
 
 def _now() -> str:
@@ -143,6 +143,20 @@ class CatalogDatabase:
             )
         return cursor.rowcount
 
+    def requeue_incomplete_analysis(self) -> int:
+        incomplete = [
+            record
+            for record in self.list_records()
+            if record.status is Status.SKIPPED
+            or (
+                record.status in {Status.ANALYZED, Status.COMPLETED}
+                and not has_complete_analysis(record)
+            )
+        ]
+        for record in incomplete:
+            self.set_status(record.id, Status.PENDING)
+        return len(incomplete)
+
     def set_status(
         self, record_id: str, status: Status, *, error: str | None = None
     ) -> MediaRecord:
@@ -169,6 +183,15 @@ class CatalogDatabase:
         highlights: tuple[str, ...],
         keywords: tuple[str, ...],
     ) -> MediaRecord:
+        cleaned_description = description.strip()
+        cleaned_highlights = tuple(
+            item.strip() for item in highlights if item.strip()
+        )
+        cleaned_keywords = tuple(
+            item.strip() for item in keywords if item.strip()
+        )
+        if not cleaned_description or not cleaned_highlights or not cleaned_keywords:
+            raise ValueError("Analysis fields must all contain useful text")
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -179,9 +202,9 @@ class CatalogDatabase:
                 """,
                 (
                     Status.ANALYZED.value,
-                    description,
-                    json.dumps(highlights, ensure_ascii=False),
-                    json.dumps(keywords, ensure_ascii=False),
+                    cleaned_description,
+                    json.dumps(cleaned_highlights, ensure_ascii=False),
+                    json.dumps(cleaned_keywords, ensure_ascii=False),
                     _now(),
                     record_id,
                 ),
