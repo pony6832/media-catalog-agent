@@ -6,8 +6,12 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import MediaRecord, Status, has_complete_analysis
+
+if TYPE_CHECKING:
+    from .schema_migration import MigrationResult
 
 
 def _now() -> str:
@@ -47,6 +51,13 @@ class CatalogDatabase:
                 )
                 """
             )
+
+    def prepare_a_plus_schema(
+        self, excel_path: Path | None = None
+    ) -> MigrationResult:
+        from .schema_migration import ensure_a_plus_schema
+
+        return ensure_a_plus_schema(self.db_path, excel_path)
 
     def upsert_discovered(
         self, path: Path, fingerprint: str, media_type: str
