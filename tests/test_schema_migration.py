@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from media_catalog.database import CatalogDatabase
-from media_catalog.schema_migration import ensure_a_plus_schema
+from media_catalog.schema_migration import LATEST_SCHEMA_VERSION, ensure_a_plus_schema
 
 
 def _sha256(path: Path) -> str:
@@ -59,6 +59,13 @@ def test_migration_backs_up_database_and_excel_before_schema_change(
             )
         }
     assert {"schema_version", "analysis_runs", "video_segments"} <= tables
+    with sqlite3.connect(database_path) as connection:
+        run_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(analysis_runs)")
+        }
+        version = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert {"analysis_mode", "force_generation", "force_prepared"} <= run_columns
+    assert version == LATEST_SCHEMA_VERSION == 2
 
 
 def test_migration_is_idempotent(tmp_path: Path) -> None:

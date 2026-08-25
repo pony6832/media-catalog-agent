@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +138,29 @@ def _apply_schema(database_path: Path, applied_at: str) -> None:
             );
             """
         )
+        run_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(analysis_runs)"
+            )
+        }
+        additions = {
+            "analysis_mode": (
+                "ALTER TABLE analysis_runs ADD COLUMN analysis_mode "
+                "TEXT NOT NULL DEFAULT 'auto'"
+            ),
+            "force_generation": (
+                "ALTER TABLE analysis_runs ADD COLUMN force_generation "
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
+            "force_prepared": (
+                "ALTER TABLE analysis_runs ADD COLUMN force_prepared "
+                "INTEGER NOT NULL DEFAULT 1"
+            ),
+        }
+        for column, statement in additions.items():
+            if column not in run_columns:
+                connection.execute(statement)
         connection.execute(
             "INSERT OR IGNORE INTO schema_version(version, applied_at) "
             "VALUES (?, ?)",

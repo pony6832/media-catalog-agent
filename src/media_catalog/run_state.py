@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .analysis_mode import AnalysisMode
 from .schema_migration import ensure_a_plus_schema
 
 
@@ -33,6 +34,9 @@ class AnalysisRun:
     stop_requested: bool
     recovery_count: int
     excel_sync_pending: bool
+    analysis_mode: AnalysisMode
+    force_generation: int
+    force_prepared: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +77,9 @@ class RunStateStore:
         image_count: int,
         total_bytes: int,
         status: str = "pending",
+        analysis_mode: AnalysisMode = AnalysisMode.AUTO,
+        force_generation: int = 0,
+        force_prepared: bool = True,
     ) -> AnalysisRun:
         timestamp = _now()
         with self._connect() as connection:
@@ -80,8 +87,9 @@ class RunStateStore:
                 """
                 INSERT INTO analysis_runs (
                     run_id, root_path, status, video_count, image_count,
-                    total_bytes, total_media, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_bytes, total_media, analysis_mode,
+                    force_generation, force_prepared, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -91,6 +99,9 @@ class RunStateStore:
                     image_count,
                     total_bytes,
                     video_count + image_count,
+                    analysis_mode.value,
+                    force_generation,
+                    int(force_prepared),
                     timestamp,
                     timestamp,
                 ),
@@ -142,6 +153,78 @@ class RunStateStore:
             image_count=image_count,
             total_bytes=total_bytes,
         )
+
+    def begin_run(
+        self,
+        *,
+        root_path: Path,
+        video_count: int,
+        image_count: int,
+        total_bytes: int,
+        mode: AnalysisMode,
+    ) -> tuple[AnalysisRun, bool]:
+        if mode is AnalysisMode.AUTO:
+            return (
+                self.ensure_run(
+                    root_path=root_path,
+                    video_count=video_count,
+                    image_count=image_count,
+                    total_bytes=total_bytes,
+                ),
+                False,
+            )
+
+        normalized_root = str(Path(root_path).resolve())
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM analysis_runs
+                WHERE root_path = ? AND analysis_mode = ?
+                    AND status != 'completed'
+                ORDER BY force_generation DESC
+                LIMIT 1
+                """,
+                (normalized_root, AnalysisMode.FORCE_GEMINI.value),
+            ).fetchone()
+            generation_row = connection.execute(
+                """
+                SELECT COALESCE(MAX(force_generation), 0)
+                FROM analysis_runs
+                WHERE root_path = ? AND analysis_mode = ?
+                """,
+                (normalized_root, AnalysisMode.FORCE_GEMINI.value),
+            ).fetchone()
+        if row is not None:
+            run = self._to_run(row)
+            return run, not run.force_prepared
+
+        generation = int(generation_row[0]) + 1
+        root_digest = hashlib.sha256(
+            normalized_root.casefold().encode("utf-8")
+        ).hexdigest()[:20]
+        run = self.create_run(
+            f"force-{root_digest}-{generation:04d}",
+            root_path=root_path,
+            video_count=video_count,
+            image_count=image_count,
+            total_bytes=total_bytes,
+            analysis_mode=AnalysisMode.FORCE_GEMINI,
+            force_generation=generation,
+            force_prepared=False,
+        )
+        return run, True
+
+    def mark_force_prepared(self, run_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE analysis_runs
+                SET force_prepared = 1, updated_at = ?
+                WHERE run_id = ? AND analysis_mode = ?
+                """,
+                (_now(), run_id, AnalysisMode.FORCE_GEMINI.value),
+            )
+        self._require_updated(cursor.rowcount, run_id)
 
     def get_run(self, run_id: str) -> AnalysisRun | None:
         with self._connect() as connection:
@@ -528,6 +611,9 @@ class RunStateStore:
             stop_requested=bool(row["stop_requested"]),
             recovery_count=row["recovery_count"],
             excel_sync_pending=bool(row["excel_sync_pending"]),
+            analysis_mode=AnalysisMode(row["analysis_mode"]),
+            force_generation=row["force_generation"],
+            force_prepared=bool(row["force_prepared"]),
         )
 
     @staticmethod

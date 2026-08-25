@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from media_catalog.analysis_mode import AnalysisMode
 from media_catalog.run_state import RunStateStore, VideoSegment
 
 
@@ -115,3 +116,79 @@ def test_run_state_tracks_and_clears_current_segment(tmp_path: Path) -> None:
     assert cleared is not None
     assert cleared.current_media_id is None
     assert cleared.current_segment_id is None
+
+
+def test_force_run_mode_survives_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite"
+    store = RunStateStore(path)
+    run, needs_prepare = store.begin_run(
+        root_path=tmp_path,
+        video_count=1,
+        image_count=2,
+        total_bytes=30,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+
+    reopened = RunStateStore(path).get_run(run.run_id)
+
+    assert needs_prepare is True
+    assert reopened is not None
+    assert reopened.analysis_mode is AnalysisMode.FORCE_GEMINI
+    assert reopened.force_generation == 1
+    assert reopened.force_prepared is False
+
+
+def test_incomplete_force_run_is_resumed_instead_of_recreated(
+    tmp_path: Path,
+) -> None:
+    store = RunStateStore(tmp_path / "catalog.sqlite")
+    first, _ = store.begin_run(
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+    store.mark_force_prepared(first.run_id)
+    resumed, needs_prepare = store.begin_run(
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+
+    assert resumed.run_id == first.run_id
+    assert resumed.force_prepared is True
+    assert needs_prepare is False
+
+
+def test_completed_force_run_creates_the_next_generation(tmp_path: Path) -> None:
+    store = RunStateStore(tmp_path / "catalog.sqlite")
+    first, _ = store.begin_run(
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+    store.update_counts(
+        first.run_id,
+        completed_media=1,
+        failed_media=0,
+        current_media_id=None,
+        current_segment_id=None,
+        status="completed",
+    )
+
+    second, needs_prepare = store.begin_run(
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+
+    assert second.run_id != first.run_id
+    assert second.force_generation == 2
+    assert needs_prepare is True
