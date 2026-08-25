@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .frame_selector import FrameSelector
+from .force_gemini import ForceImageAnalyzer
 from .gemini_client import GeminiClient
 from .inference import (
     FallbackVideoExtractor,
@@ -19,6 +20,7 @@ from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
 from .run_state import RunStateStore
 from .scene_segments import SceneSegmenter
 from .segment_pipeline import SegmentPipeline
+from .stage_runner import StageRunner
 from .workspace import MediaWorkspace
 
 
@@ -34,6 +36,7 @@ class AnalysisRuntime:
     local_analyzer: LocalAnalyzer
     segment_pipeline: SegmentPipeline
     run_state: RunStateStore
+    force_image_analyzer: ForceImageAnalyzer
 
     def analyze(self, source: Path):
         return self.local_analyzer.analyze(source)
@@ -139,14 +142,15 @@ def build_local_analyzer(
             mcp = None
 
     evidence_extractor = FallbackVideoExtractor(watch, mcp)
+    image_preparer = FfmpegImagePreparer(
+        output_root=analysis_output / "normalized",
+        ffmpeg_executable=ffmpeg_executable,
+        runner=runner,
+    )
     local_analyzer = LocalAnalyzer(
         model=model,
         video_extractor=evidence_extractor,
-        image_preparer=FfmpegImagePreparer(
-            output_root=analysis_output / "normalized",
-            ffmpeg_executable=ffmpeg_executable,
-            runner=runner,
-        ),
+        image_preparer=image_preparer,
         ollama_executable=ollama_executable,
         runner=runner,
         timeout=600,
@@ -154,6 +158,7 @@ def build_local_analyzer(
     run_state = RunStateStore(
         workspace.database_path, excel_path=workspace.excel_path
     )
+    gemini_client = GeminiClient()
     segment_pipeline = SegmentPipeline(
         segmenter=SceneSegmenter(
             ffmpeg_executable=ffmpeg_executable,
@@ -162,9 +167,20 @@ def build_local_analyzer(
         ),
         selector=FrameSelector(),
         local_analyzer=local_analyzer,
-        gemini_client=GeminiClient(),
+        gemini_client=gemini_client,
         store=run_state,
         output_root=analysis_output / "segments",
         evidence_extractor=evidence_extractor,
     )
-    return AnalysisRuntime(local_analyzer, segment_pipeline, run_state)
+    force_image_analyzer = ForceImageAnalyzer(
+        local_analyzer=local_analyzer,
+        image_preparer=image_preparer,
+        gemini_client=gemini_client,
+        stage_runner=StageRunner(),
+    )
+    return AnalysisRuntime(
+        local_analyzer,
+        segment_pipeline,
+        run_state,
+        force_image_analyzer,
+    )

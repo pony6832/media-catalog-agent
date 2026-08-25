@@ -4,7 +4,58 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .gemini_client import GeminiClient, GeminiSegmentRequest
+from .inference import Analysis, ImagePreparer, LocalAnalyzer
 from .models import MediaRecord
+from .stage_runner import StagePolicy, StageRunner
+
+
+@dataclass(frozen=True, slots=True)
+class ForceImageResult:
+    analysis: Analysis
+    warning: str | None
+    gemini_used: bool
+
+
+class ForceImageAnalyzer:
+    def __init__(
+        self,
+        *,
+        local_analyzer: LocalAnalyzer,
+        image_preparer: ImagePreparer,
+        gemini_client: GeminiClient,
+        stage_runner: StageRunner,
+    ) -> None:
+        self.local_analyzer = local_analyzer
+        self.image_preparer = image_preparer
+        self.gemini_client = gemini_client
+        self.stage_runner = stage_runner
+
+    def analyze(self, source: Path) -> ForceImageResult:
+        local = self.local_analyzer.analyze(source)
+        preview = self.image_preparer.prepare(source)
+        request = GeminiSegmentRequest(
+            frames=(preview,),
+            ocr_text="",
+            local_analysis=local,
+        )
+        cloud = self.stage_runner.run(
+            "gemini_force_image",
+            lambda _timeout: self.gemini_client.analyze(request),
+            StagePolicy(timeout_seconds=90, retries=1),
+        )
+        if cloud.ok and cloud.value is not None:
+            return ForceImageResult(
+                analysis=cloud.value,
+                warning=None,
+                gemini_used=True,
+            )
+        error_type = cloud.error_type or "UnknownError"
+        return ForceImageResult(
+            analysis=local,
+            warning=f"Gemini 強化失敗:{error_type}",
+            gemini_used=False,
+        )
 
 
 @dataclass(frozen=True, slots=True)
