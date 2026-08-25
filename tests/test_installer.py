@@ -35,3 +35,16 @@ def test_installer_verifies_tkinter_and_status_ui_without_opening_window() -> No
 
     assert "import tkinter" in installer
     assert "import media_catalog.status_ui" in installer
+
+
+def test_installer_requires_pythonw_and_creates_desktop_shortcut() -> None:
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "install-media-inventory-skill.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Scripts\\pythonw.exe" in installer
+    assert "create-media-catalog-shortcut.ps1" in installer
+    assert "-SkillRoot $destinationFull" in installer
+    assert "MEDIA_CATALOG_SHORTCUT_READY" in installer

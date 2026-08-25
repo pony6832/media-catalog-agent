@@ -17,6 +17,10 @@ try {
     if (-not (Test-Path -LiteralPath $sourceSkill -PathType Container)) {
         throw "找不到來源 Skill：$sourceSkill"
     }
+    $shortcutInstaller = Join-Path $projectRootPath 'scripts\create-media-catalog-shortcut.ps1'
+    if (-not (Test-Path -LiteralPath $shortcutInstaller -PathType Leaf)) {
+        throw "Missing desktop shortcut installer: $shortcutInstaller"
+    }
 
     $destinationFull = [IO.Path]::GetFullPath($Destination)
     if ([IO.Path]::GetFileName($destinationFull) -ne 'media-inventory') {
@@ -62,8 +66,12 @@ try {
     }
 
     $runtimePython = Join-Path $runtimeRoot 'Scripts\python.exe'
+    $runtimePythonw = Join-Path $runtimeRoot 'Scripts\pythonw.exe'
     if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
         throw "找不到私有 Python：$runtimePython"
+    }
+    if (-not (Test-Path -LiteralPath $runtimePythonw -PathType Leaf)) {
+        throw "Missing private pythonw.exe: $runtimePythonw"
     }
 
     & $runtimePython -m pip install --disable-pip-version-check --no-cache-dir --no-compile 'setuptools>=68'
@@ -143,6 +151,16 @@ try {
     if ($smokeExitCode -ne 0 -or ($smokeOutput -join "`n") -notmatch 'MEDIA_CATALOG_READY') {
         throw "Skill 啟動測試失敗，exit=$smokeExitCode output=$($smokeOutput -join ' ')"
     }
+
+    $shortcutOutput = & $shortcutInstaller -SkillRoot $destinationFull 2>&1
+    $shortcutExitCode = $LASTEXITCODE
+    if (
+        $shortcutExitCode -ne 0 -or
+        ($shortcutOutput -join "`n") -notmatch 'MEDIA_CATALOG_SHORTCUT_READY'
+    ) {
+        throw "Desktop shortcut install failed, exit=$shortcutExitCode output=$($shortcutOutput -join ' ')"
+    }
+    Write-Output ($shortcutOutput -join "`n")
 
     $backupLabel = if ($null -eq $backupPath) { 'none' } else { $backupPath }
     Write-Output "MEDIA_INVENTORY_SKILL_READY destination=$destinationFull backup=$backupLabel"
