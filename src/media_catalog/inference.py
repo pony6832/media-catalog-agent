@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Callable, Protocol, Sequence
 from urllib.parse import urlparse
 
+from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
+
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
@@ -234,6 +236,7 @@ class WatchVideoExtractor:
                 timeout=self.timeout,
                 check=False,
                 env=_offline_environment(),
+                creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AnalysisError(f"watch-skill failed: {error}") from error
@@ -308,6 +311,7 @@ class McpVideoExtractor:
                 timeout=self.timeout,
                 check=False,
                 env=_offline_environment(),
+                creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AnalysisError(f"mcp-video-analyzer failed: {error}") from error
@@ -398,6 +402,7 @@ class FfmpegImagePreparer:
                 timeout=self.timeout,
                 check=False,
                 env=_offline_environment(),
+                creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AnalysisError(f"ffmpeg preview failed: {error}") from error
@@ -528,6 +533,7 @@ class LocalAnalyzer:
                 timeout=self.timeout,
                 check=False,
                 env=_offline_environment(),
+                creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AnalysisError(f"Ollama analysis failed: {error}") from error

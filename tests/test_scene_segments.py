@@ -53,11 +53,13 @@ def test_segmenter_parses_scene_times_and_extracts_bounded_candidates(
     source.write_bytes(b"original-video")
     before_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     calls: list[list[str]] = []
+    keyword_calls: list[dict[str, object]] = []
 
     def runner(
-        arguments: list[str], **_kwargs: object
+        arguments: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
+        keyword_calls.append(kwargs)
         if arguments[0] == "ffprobe.exe":
             return subprocess.CompletedProcess(
                 arguments, 0, stdout="607.0\n", stderr=""
@@ -98,6 +100,12 @@ def test_segmenter_parses_scene_times_and_extracts_bounded_candidates(
         if "-ss" in call
     ]
     assert seek_times == [70.0, 160.0, 250.0]
+    assert all(
+        kwargs["creationflags"] == getattr(
+            subprocess, "CREATE_NO_WINDOW", 0
+        )
+        for kwargs in keyword_calls
+    )
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
 
 

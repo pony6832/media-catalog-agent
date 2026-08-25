@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from media_catalog.bootstrap import bootstrap_workspace
 from media_catalog.run_state import RunStateStore, VideoSegment
+from media_catalog import supervisor as supervisor_module
 from media_catalog.supervisor import WorkerSupervisor
 
 
@@ -33,6 +37,29 @@ class ProcessFactory:
     def __call__(self, arguments: list[str]) -> FakeProcess:
         self.arguments.append(arguments)
         return self.processes[len(self.arguments) - 1]
+
+
+def test_default_process_factories_hide_windows_console_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keyword_calls: list[dict[str, object]] = []
+
+    def popen(_arguments: list[str], **kwargs: object) -> FakeProcess:
+        keyword_calls.append(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", popen)
+
+    supervisor_module._spawn_process(["worker.exe"])
+    supervisor_module._spawn_catalog_process(["catalog.exe"])
+
+    assert len(keyword_calls) == 2
+    assert all(
+        kwargs["creationflags"] == getattr(
+            subprocess, "CREATE_NO_WINDOW", 0
+        )
+        for kwargs in keyword_calls
+    )
 
 
 def prepared_root(tmp_path: Path) -> tuple[Path, Path, RunStateStore, str]:

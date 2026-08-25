@@ -10,6 +10,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
+
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 SCENE_THRESHOLD = 0.35
@@ -206,6 +208,7 @@ class SceneSegmenter:
                 errors="replace",
                 timeout=self.timeout_seconds,
                 check=False,
+                creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise SceneSegmentationError(

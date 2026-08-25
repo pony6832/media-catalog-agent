@@ -41,12 +41,14 @@ def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) 
     script.write_text("# test command target", encoding="utf-8")
     calls: list[list[str]] = []
     environments: list[dict[str, str]] = []
+    creation_flags: list[int] = []
 
     def runner(
         arguments: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
         environments.append(kwargs["env"])
+        creation_flags.append(kwargs["creationflags"])
         out_dir = Path(arguments[arguments.index("--out-dir") + 1])
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "frame_0001.jpg").write_bytes(b"frame")
@@ -63,6 +65,7 @@ def test_watch_extractor_uses_claude_video_once_without_whisper(tmp_path: Path) 
     assert "--no-whisper" in calls[0]
     assert "--detail" in calls[0]
     assert environments[0]["PYTHONUTF8"] == "1"
+    assert creation_flags == [getattr(subprocess, "CREATE_NO_WINDOW", 0)]
     assert evidence.frames[0].name == "frame_0001.jpg"
 
 
@@ -96,6 +99,7 @@ def test_mcp_extractor_is_pinned_offline_and_normalizes_output(
         captured["arguments"] = arguments
         captured["environment"] = kwargs["env"]
         captured["encoding"] = kwargs.get("encoding")
+        captured["creationflags"] = kwargs.get("creationflags")
         out_dir = Path(arguments[arguments.index("--out") + 1])
         out_dir.mkdir(parents=True, exist_ok=True)
         frame = out_dir / "scene_001.jpg"
@@ -127,6 +131,9 @@ def test_mcp_extractor_is_pinned_offline_and_normalizes_output(
     assert environment["npm_config_offline"] == "true"
     assert all(key not in environment for key in cloud_keys)
     assert captured["encoding"] == "utf-8"
+    assert captured["creationflags"] == getattr(
+        subprocess, "CREATE_NO_WINDOW", 0
+    )
     assert evidence.frames[0].name == "scene_001.jpg"
     assert evidence.ocr_text == ("門牌 25 號",)
 
@@ -277,11 +284,13 @@ def test_ffmpeg_preparer_creates_a_bounded_preview_without_source_change(
     source.write_bytes(b"original")
     before = source.stat()
     calls: list[list[str]] = []
+    creation_flags: list[int] = []
 
     def runner(
-        arguments: list[str], **_: object
+        arguments: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
+        creation_flags.append(kwargs["creationflags"])
         Path(arguments[-1]).write_bytes(b"preview")
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
@@ -292,6 +301,7 @@ def test_ffmpeg_preparer_creates_a_bounded_preview_without_source_change(
     assert preview.is_file()
     assert preview.parent == (tmp_path / "previews").resolve()
     assert "scale=1024:1024:force_original_aspect_ratio=decrease" in calls[0]
+    assert creation_flags == [getattr(subprocess, "CREATE_NO_WINDOW", 0)]
     assert source.read_bytes() == b"original"
     assert source.stat().st_mtime_ns == before.st_mtime_ns
 
@@ -349,9 +359,11 @@ def test_local_analyzer_analyzes_selected_frames_in_one_request(
     for frame in frames:
         frame.write_bytes(b"frame")
     calls: list[list[str]] = []
+    creation_flags: list[int] = []
 
-    def runner(arguments: list[str], **_: object):
+    def runner(arguments: list[str], **kwargs: object):
         calls.append(arguments)
+        creation_flags.append(kwargs["creationflags"])
         return subprocess.CompletedProcess(
             arguments,
             0,
@@ -371,6 +383,7 @@ def test_local_analyzer_analyzes_selected_frames_in_one_request(
 
     assert result.keywords == ("講者", "簡報")
     assert len(calls) == 1
+    assert creation_flags == [getattr(subprocess, "CREATE_NO_WINDOW", 0)]
     assert all(str(frame) in calls[0] for frame in frames)
     assert "會議標題" in calls[0][-1]
 

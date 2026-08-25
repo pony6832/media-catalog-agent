@@ -15,6 +15,7 @@ from .inference import (
     Runner,
     WatchVideoExtractor,
 )
+from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
 from .run_state import RunStateStore
 from .scene_segments import SceneSegmenter
 from .segment_pipeline import SegmentPipeline
@@ -55,6 +56,7 @@ def _preflight(
             errors="replace",
             timeout=30,
             check=False,
+            creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RuntimePreflightError(

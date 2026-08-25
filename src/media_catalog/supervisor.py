@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .database import CatalogDatabase
+from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
 from .run_state import AnalysisRun, RunStateStore
 from .workspace import MediaWorkspace, WorkspacePathError
 
@@ -38,6 +39,7 @@ def _spawn_process(arguments: list[str]) -> WorkerProcess:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
     )
 
 
@@ -50,6 +52,7 @@ def _spawn_catalog_process(arguments: list[str]) -> WorkerProcess:
         text=True,
         encoding="utf-8",
         errors="backslashreplace",
+        creationflags=HIDDEN_PROCESS_CREATION_FLAGS,
     )
 
 

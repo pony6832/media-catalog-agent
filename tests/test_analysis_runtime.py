@@ -6,6 +6,7 @@ import pytest
 
 from media_catalog.analysis_runtime import (
     RuntimePreflightError,
+    _preflight,
     build_local_analyzer,
 )
 from media_catalog.inference import FallbackVideoExtractor, McpVideoExtractor
@@ -83,6 +84,20 @@ def _runner(
         raise AssertionError(f"unexpected command: {arguments}")
 
     return run, calls
+
+
+def test_preflight_hides_windows_console_processes() -> None:
+    captured: dict[str, object] = {}
+
+    def runner(arguments: list[str], **kwargs: object):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(arguments, 0, stdout="ok", stderr="")
+
+    _preflight(runner, ["tool.exe", "--version"])
+
+    assert captured["creationflags"] == getattr(
+        subprocess, "CREATE_NO_WINDOW", 0
+    )
 
 
 def test_build_runtime_resolves_watch_and_pinned_private_mcp(
