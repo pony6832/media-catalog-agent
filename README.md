@@ -26,6 +26,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-media-inve
 整理並分析這個資料夾：D:\你的媒體資料夾
 ```
 
+指令會先建立或更新清冊，再自動開啟 Media Catalog A+ 狀態視窗並開始分析。綠燈代表 15 秒內有 worker 心跳；紅燈會顯示未執行、心跳逾時、正在重新啟動或等待 Excel 關閉。詳細說明見 [`docs/media-catalog-a-plus-setup.md`](docs/media-catalog-a-plus-setup.md)。
+
 ## 如何判讀執行結果
 
 - `MEDIA_ANALYSIS_PROGRESS`：逐項進度，程序仍在執行。

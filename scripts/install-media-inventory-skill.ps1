@@ -76,6 +76,11 @@ try {
         throw "安裝本機 media-catalog 專案失敗，exit=$LASTEXITCODE"
     }
 
+    & $runtimePython -c "import tkinter; import media_catalog.status_ui"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tkinter 或 Media Catalog A+ 狀態 UI 無法載入，exit=$LASTEXITCODE"
+    }
+
     $nodeCommand = @(Get-Command node -CommandType Application -ErrorAction Stop)[0]
     $npmCommand = @(Get-Command npm.cmd -CommandType Application -ErrorAction Stop)[0]
     $nodeVersion = (& $nodeCommand.Source --version).Trim()
@@ -126,8 +131,12 @@ try {
 
     $launcher = Join-Path $destinationFull 'scripts\run_media_catalog.ps1'
     $analysisLauncher = Join-Path $destinationFull 'scripts\run_media_analysis.ps1'
+    $uiLauncher = Join-Path $destinationFull 'scripts\run_media_analysis_ui.ps1'
     if (-not (Test-Path -LiteralPath $analysisLauncher -PathType Leaf)) {
         throw "Missing media analysis launcher: $analysisLauncher"
+    }
+    if (-not (Test-Path -LiteralPath $uiLauncher -PathType Leaf)) {
+        throw "Missing Media Catalog A+ UI launcher: $uiLauncher"
     }
     $smokeOutput = & $launcher -RootPath $smokeRoot 2>&1
     $smokeExitCode = $LASTEXITCODE

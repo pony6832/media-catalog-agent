@@ -13,6 +13,7 @@ def test_skill_package_has_required_entrypoints() -> None:
     assert (SKILL_ROOT / "agents/openai.yaml").is_file()
     assert (SKILL_ROOT / "scripts/run_media_catalog.ps1").is_file()
     assert (SKILL_ROOT / "scripts/run_media_analysis.ps1").is_file()
+    assert (SKILL_ROOT / "scripts/run_media_analysis_ui.ps1").is_file()
 
 
 def test_skill_package_passes_official_validation() -> None:

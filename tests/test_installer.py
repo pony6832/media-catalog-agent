@@ -24,3 +24,14 @@ def test_installer_uses_skill_local_npm_cache() -> None:
 
     assert "$npmCache = Join-Path $mcpRoot '.npm-cache'" in installer
     assert "--cache $npmCache --no-audit --no-fund" in installer
+
+
+def test_installer_verifies_tkinter_and_status_ui_without_opening_window() -> None:
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "install-media-inventory-skill.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "import tkinter" in installer
+    assert "import media_catalog.status_ui" in installer

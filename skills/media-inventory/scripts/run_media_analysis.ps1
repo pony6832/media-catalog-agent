@@ -4,15 +4,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$skillRoot = Split-Path -Parent $PSScriptRoot
-$runtimePython = Join-Path $skillRoot '.runtime\Scripts\python.exe'
+$uiLauncher = Join-Path $PSScriptRoot 'run_media_analysis_ui.ps1'
 
-if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $uiLauncher -PathType Leaf)) {
     [Console]::Error.WriteLine(
-        "MEDIA_ANALYSIS_ERROR missing_skill_runtime=$runtimePython"
+        "MEDIA_ANALYSIS_ERROR missing_ui_launcher=$uiLauncher"
     )
     exit 2
 }
 
-& $runtimePython -m media_catalog.cli analyze-all $RootPath --skill-root $skillRoot
+& $uiLauncher -RootPath $RootPath
 exit $LASTEXITCODE
