@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 
-KEY_SHAPE = re.compile(r"AIza[0-9A-Za-z_-]{30,}")
+KEY_SHAPE = re.compile(r"AI" r"za[0-9A-Za-z_-]{30,}")
 
 
 def test_repository_files_have_no_gemini_key_shape() -> None:
@@ -27,7 +27,13 @@ def test_repository_files_have_no_gemini_key_shape() -> None:
         if not path.is_file() or path.suffix.casefold() == ".xlsx":
             continue
         content = path.read_text(encoding="utf-8", errors="ignore")
-        if KEY_SHAPE.search(content):
+        contains_runtime_prefix = (
+            ("AI" + "za") in content
+            and not name.replace("\\", "/").startswith(
+                "docs/superpowers/"
+            )
+        )
+        if KEY_SHAPE.search(content) or contains_runtime_prefix:
             matches.append(name)
 
     assert matches == []
@@ -42,5 +48,7 @@ def test_standalone_launch_artifacts_do_not_embed_provider_configuration() -> No
     for path in paths:
         content = path.read_text(encoding="utf-8")
         assert "GEMINI_API_KEY" not in content
+        assert "GEMINI_API_KEY=" not in content
         assert "GOOGLE_API_KEY" not in content
+        assert "--api-key" not in content
         assert "gemini-3.7-flash" not in content

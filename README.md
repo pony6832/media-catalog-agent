@@ -32,15 +32,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-media-inve
 整理並分析這個資料夾：D:\你的媒體資料夾
 ```
 
-指令會先建立或更新清冊，再自動開啟 Media Catalog A+ 狀態視窗並開始分析。綠燈代表 15 秒內有 worker 心跳；紅燈會顯示未執行、心跳逾時、正在重新啟動或等待 Excel 關閉。詳細說明見 [`docs/media-catalog-a-plus-setup.md`](docs/media-catalog-a-plus-setup.md)。
+指令會先建立或更新清冊，再開啟 Media Catalog A+ 狀態視窗。新清冊完成後會顯示「清冊就緒，請選擇分析模式」；普通辨識按「開始／繼續」，指定資料夾需要雲端加強時按「強制 Gemini 強化」。綠燈代表 15 秒內有 worker 心跳；紅燈會顯示未執行、心跳逾時、正在重新啟動或等待 Excel 關閉。詳細說明見 [`docs/media-catalog-a-plus-setup.md`](docs/media-catalog-a-plus-setup.md)。
 
 ### 不開 Codex，從桌面啟動
 
 1. 雙擊桌面的 `Media Catalog A+ Stable`。
 2. 在紅燈顯示「尚未選擇資料夾」時按「選擇資料夾」。
-3. 選定單一媒體根目錄；UI 會先顯示「正在建立／更新清冊」，完成後自動開始分析。
+3. 選定單一媒體根目錄；UI 會先顯示「正在建立／更新清冊」。
+4. 顯示「清冊就緒，請選擇分析模式」後，普通辨識按「開始／繼續」；需要指定加強時按橘色「強制 Gemini 強化」。
+5. 強制模式會先列出未審核照片／影片數、正常請求上限與含重試上限；確認後才開始。
 
 取消資料夾選擇不會建立 `媒體整理成果`。分析或清冊掃描進行中不能切換根目錄；先按「安全停止」，等程序退出後才能重新選擇。桌面啟動只顯示 A+ UI，不會顯示 PowerShell 或 Python 黑色終端視窗。
+
+### 普通辨識與強制 Gemini 強化
+
+- 「開始／繼續」維持本地優先，只在本地結果資訊不足時自動使用 Gemini。
+- 「強制 Gemini 強化」會重新分析未審核項目；Excel 已標成「已審核」的列不會重跑。
+- 照片每張只傳一張縮放預覽；影片每支最多選 12 個片段，每段只傳 1～3 張縮圖，不上傳完整影片或完整本機路徑。
+- Gemini 每次失敗會重試一次；仍失敗時保留本地結果，Excel 顯示「Gemini 強化失敗」供人工確認，不中斷整批。
+- API Key 只從私人環境變數讀取，不寫入 Git、Skill、捷徑、Excel、SQLite 或程序參數。
 
 ## 如何判讀執行結果
 

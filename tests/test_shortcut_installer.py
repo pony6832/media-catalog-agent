@@ -108,6 +108,8 @@ def test_shortcut_script_creates_one_credential_free_link_and_updates_in_place(
     assert "shell32.dll,3" in fields["IconLocation"].lower()
     assert fields["Description"] == "Media Catalog A+ Stable 媒體整理與分析"
     assert "GEMINI_API_KEY" not in serialized
+    assert "GEMINI_API_KEY=" not in serialized
+    assert "--api-key" not in serialized
     assert "gemini-3.7-flash" not in serialized
 
 

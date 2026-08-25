@@ -11,6 +11,8 @@ def test_analysis_launcher_delegates_to_ui_launcher_without_credentials() -> Non
 
     assert "run_media_analysis_ui.ps1" in launcher
     assert "GEMINI_API_KEY" not in launcher
+    assert "GEMINI_API_KEY=" not in launcher
+    assert "--api-key" not in launcher
 
 
 def test_ui_launcher_uses_private_pythonw_and_optional_root() -> None:
@@ -24,4 +26,6 @@ def test_ui_launcher_uses_private_pythonw_and_optional_root() -> None:
     assert "'-m', 'media_catalog.status_ui'" in launcher
     assert "if (-not [string]::IsNullOrWhiteSpace($RootPath))" in launcher
     assert "GEMINI_API_KEY" not in launcher
+    assert "GEMINI_API_KEY=" not in launcher
+    assert "--api-key" not in launcher
     assert "gemini-3.7-flash" not in launcher
