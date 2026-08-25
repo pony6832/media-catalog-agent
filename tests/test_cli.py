@@ -96,6 +96,11 @@ def test_force_cli_passes_mode_and_run_id_to_batch(
         return BatchAnalysisResult(1, 0, 0, 0)
 
     monkeypatch.setattr(cli_module, "analyze_pending", fake_batch)
+    monkeypatch.setattr(
+        cli_module,
+        "read_reviewed_paths",
+        lambda _path: {"C:\\reviewed.jpg"},
+    )
 
     exit_code = main(
         [
@@ -114,6 +119,7 @@ def test_force_cli_passes_mode_and_run_id_to_batch(
     assert exit_code == 0
     assert captured["mode"] is AnalysisMode.FORCE_GEMINI
     assert captured["run_id"] == "force-root-1"
+    assert captured["reviewed_paths"] == {"C:\\reviewed.jpg"}
 
 
 def test_cli_analyze_all_recovers_interrupted_and_failed_rows(

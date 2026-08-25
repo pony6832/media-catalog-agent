@@ -5,7 +5,9 @@ import pytest
 from openpyxl import load_workbook
 
 from media_catalog.batch_analysis import BatchAnalysisResult, analyze_pending
+from media_catalog.analysis_mode import AnalysisMode
 from media_catalog.database import CatalogDatabase
+from media_catalog.force_gemini import ForceImageResult
 from media_catalog.inference import Analysis, AnalysisError
 from media_catalog.models import Status
 from media_catalog.run_state import RunStateStore
@@ -25,6 +27,31 @@ class PathAwareAnalyzer:
         if source.name == self.fail_name:
             raise AnalysisError("invalid image")
         return Analysis("賀卡預覽", ("紅色",), ("賀卡",))
+
+
+class RecordingForceImages:
+    def __init__(self, result: ForceImageResult) -> None:
+        self.result = result
+        self.sources: list[Path] = []
+
+    def analyze(self, source: Path) -> ForceImageResult:
+        self.sources.append(source.resolve())
+        return self.result
+
+
+class ForceRuntime:
+    def __init__(
+        self, store: RunStateStore, force_images: RecordingForceImages
+    ) -> None:
+        self.run_state = store
+        self.segment_pipeline = object()
+        self.force_image_analyzer = force_images
+
+    def analyze(self, _source: Path) -> Analysis:
+        raise AssertionError("auto photo analysis must not run in force mode")
+
+
+LOCAL = Analysis("本地描述完整。", ("本地重點",), ("本地",))
 
 
 def _workspace_with_media(
@@ -142,7 +169,7 @@ def test_a_plus_runtime_continues_sqlite_analysis_when_excel_is_locked(
     )
 
     class FakeVideoPipeline:
-        def analyze_video(self, record, run_id):
+        def analyze_video(self, record, run_id, *, mode=AnalysisMode.AUTO):
             return VideoAnalysisResult(
                 description="影片片段分析完成。",
                 highlights=("片段",),
@@ -182,7 +209,7 @@ def test_safe_stop_returns_current_video_to_pending_without_failure(
     )
 
     class StoppingPipeline:
-        def analyze_video(self, _record, run_id):
+        def analyze_video(self, _record, run_id, *, mode=AnalysisMode.AUTO):
             store.request_stop(run_id)
             raise SafeStopRequested("safe stop requested")
 
@@ -198,3 +225,84 @@ def test_safe_stop_returns_current_video_to_pending_without_failure(
     assert result.remaining == 1
     run = store.get_run(store.run_id_for_root(workspace.root))
     assert run is not None and run.status == "incomplete"
+
+
+def test_force_batch_skips_reviewed_and_requeues_unreviewed_once(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(
+        tmp_path, ("reviewed.jpg", "eligible.jpg")
+    )
+    analyze_pending(workspace, PathAwareAnalyzer())
+    database = CatalogDatabase(workspace.database_path)
+    records = {item.path.name: item for item in database.list_records()}
+    reviewed_path = str(records["reviewed.jpg"].path.resolve())
+    store = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+    run, _ = store.begin_run(
+        root_path=workspace.root,
+        video_count=0,
+        image_count=2,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+    force_images = RecordingForceImages(ForceImageResult(LOCAL, None, True))
+    runtime = ForceRuntime(store, force_images)
+
+    first = analyze_pending(
+        workspace,
+        runtime,
+        mode=AnalysisMode.FORCE_GEMINI,
+        run_id=run.run_id,
+        reviewed_paths={reviewed_path},
+    )
+    second = analyze_pending(
+        workspace,
+        runtime,
+        mode=AnalysisMode.FORCE_GEMINI,
+        run_id=run.run_id,
+        reviewed_paths={reviewed_path},
+    )
+
+    assert force_images.sources == [records["eligible.jpg"].path.resolve()]
+    assert first.analyzed == 1
+    assert second.analyzed == 0
+    reviewed = CatalogDatabase(workspace.database_path).get_record(
+        records["reviewed.jpg"].id
+    )
+    assert reviewed is not None
+    assert reviewed.description == "賀卡預覽"
+
+
+def test_force_batch_saves_local_result_with_nonfatal_gemini_warning(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(tmp_path, ("photo.jpg",))
+    store = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+    run, _ = store.begin_run(
+        root_path=workspace.root,
+        video_count=0,
+        image_count=1,
+        total_bytes=5,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+    force_images = RecordingForceImages(
+        ForceImageResult(LOCAL, "Gemini 強化失敗:GeminiError", False)
+    )
+
+    result = analyze_pending(
+        workspace,
+        ForceRuntime(store, force_images),
+        mode=AnalysisMode.FORCE_GEMINI,
+        run_id=run.run_id,
+        reviewed_paths=set(),
+    )
+
+    record = CatalogDatabase(workspace.database_path).list_records()[0]
+    assert record.status is Status.ANALYZED
+    assert record.description == LOCAL.description
+    assert record.error == "Gemini 強化失敗:GeminiError"
+    assert result.failed == 1

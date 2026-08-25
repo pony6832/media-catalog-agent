@@ -8,6 +8,7 @@ from pathlib import Path
 from .analysis_mode import AnalysisMode
 from .database import CatalogDatabase
 from .excel_catalog import write_excel
+from .force_gemini import plan_force_run
 from .inference import AnalysisError
 from .models import MediaRecord, Status, has_complete_analysis
 from .processor import Analyzer
@@ -46,12 +47,8 @@ def analyze_pending(
 ) -> BatchAnalysisResult:
     database = CatalogDatabase(workspace.database_path)
     initial_records = database.list_records()
-    pending = [
-        record for record in initial_records if record.status is Status.PENDING
-    ]
     analyzed = 0
     completed = 0
-    total = len(pending)
     run_state = getattr(analyzer, "run_state", None)
     segment_pipeline = getattr(analyzer, "segment_pipeline", None)
     active_run_id = run_id
@@ -79,6 +76,76 @@ def analyze_pending(
             active_run_id = run.run_id
         run_state.clear_stop(active_run_id)
 
+    force_eligible_ids: set[str] | None = None
+    if mode is AnalysisMode.FORCE_GEMINI:
+        if run_state is None or active_run_id is None:
+            raise AnalysisError("force Gemini mode requires persistent run state")
+        estimate, eligible_ids = plan_force_run(
+            initial_records, reviewed_paths or set()
+        )
+        del estimate
+        force_eligible_ids = set(eligible_ids)
+        active_run = run_state.get_run(active_run_id)
+        if active_run is None:
+            raise AnalysisError("force Gemini run state is missing")
+        if active_run.analysis_mode is not AnalysisMode.FORCE_GEMINI:
+            raise AnalysisError("run mode does not match force Gemini mode")
+        if not active_run.force_prepared:
+            eligible_records = {
+                record.id: record
+                for record in initial_records
+                if record.id in force_eligible_ids
+            }
+            for identity in eligible_ids:
+                record = eligible_records[identity]
+                if record.media_type.startswith("video/"):
+                    run_state.reset_video_for_force(
+                        active_run_id, record.id
+                    )
+            database.requeue_for_force(eligible_ids)
+            run_state.mark_force_prepared(active_run_id)
+            initial_records = database.list_records()
+        else:
+            recoverable_ids = tuple(
+                record.id
+                for record in initial_records
+                if record.id in force_eligible_ids
+                and (
+                    record.status
+                    in {Status.PROCESSING, Status.FAILED, Status.SKIPPED}
+                    or (
+                        record.status
+                        in {Status.ANALYZED, Status.COMPLETED}
+                        and not has_complete_analysis(record)
+                    )
+                )
+            )
+            if recoverable_ids:
+                database.requeue_for_force(recoverable_ids)
+                initial_records = database.list_records()
+
+    pending = [
+        record
+        for record in initial_records
+        if record.status is Status.PENDING
+        and (
+            force_eligible_ids is None or record.id in force_eligible_ids
+        )
+    ]
+    total = len(pending)
+
+    def failed_count(records: Iterable[MediaRecord]) -> int:
+        fatal = sum(record.status is Status.FAILED for record in records)
+        if mode is not AnalysisMode.FORCE_GEMINI:
+            return fatal
+        warnings = sum(
+            record.status is Status.ANALYZED
+            and bool(record.error)
+            and record.error.startswith("Gemini 強化失敗")
+            for record in records
+        )
+        return fatal + warnings
+
     def sync_excel() -> None:
         nonlocal excel_sync_pending
         try:
@@ -98,11 +165,11 @@ def analyze_pending(
             return
         records = database.list_records()
         completed_count = sum(has_complete_analysis(record) for record in records)
-        failed_count = sum(record.status is Status.FAILED for record in records)
+        current_failed_count = failed_count(records)
         run_state.update_counts(
             active_run_id,
             completed_media=completed_count,
-            failed_media=failed_count,
+            failed_media=current_failed_count,
             current_media_id=current_media_id,
             current_segment_id=None,
             status="running",
@@ -141,14 +208,20 @@ def analyze_pending(
             sync_excel()
             update_run(record.id)
             try:
+                warning = None
                 if (
                     segment_pipeline is not None
                     and active_run_id is not None
                     and record.media_type.startswith("video/")
                 ):
                     result = segment_pipeline.analyze_video(
-                        record, active_run_id
+                        record, active_run_id, mode=mode
                     )
+                    warning = result.warning
+                elif mode is AnalysisMode.FORCE_GEMINI:
+                    forced = analyzer.force_image_analyzer.analyze(record.path)
+                    result = forced.analysis
+                    warning = forced.warning
                 else:
                     result = analyzer.analyze(record.path)
                 verify_record_source(record, snapshot)
@@ -169,6 +242,7 @@ def analyze_pending(
                     description=result.description,
                     highlights=result.highlights,
                     keywords=result.keywords,
+                    warning=warning,
                 )
                 analyzed += 1
             sync_excel()
@@ -181,7 +255,7 @@ def analyze_pending(
 
         sync_excel()
 
-    failed = len(database.list_by_status((Status.FAILED,)))
+    failed = failed_count(database.list_records())
     remaining = sum(
         not has_complete_analysis(record)
         for record in database.list_records()

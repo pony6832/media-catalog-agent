@@ -163,3 +163,34 @@ def test_atomic_rebuild_preserves_reviewed_status_by_path(
     assert workbook["媒體清冊"].cell(2, 1).value == "已審核"
     workbook.close()
     assert read_reviewed_paths(output) == {str(source.resolve())}
+
+
+def test_gemini_warning_keeps_analysis_visible_for_manual_review(
+    tmp_path: Path,
+) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"photo")
+    record = database.upsert_discovered(source, "photo", "image/jpeg")
+    analyzed = database.save_analysis(
+        record.id,
+        description="本地分析仍可使用。",
+        highlights=("保留重點",),
+        keywords=("本地備援",),
+        warning="Gemini 強化失敗:GeminiError",
+    )
+
+    output = write_excel([analyzed], tmp_path / "媒體清冊.xlsx")
+
+    workbook = load_workbook(output, read_only=True)
+    row = tuple(
+        cell.value for cell in next(workbook["媒體清冊"].iter_rows(min_row=2))
+    )
+    workbook.close()
+    assert row[0] == "待確認"
+    assert row[4:7] == (
+        "本地分析仍可使用。",
+        "保留重點",
+        "本地備援",
+    )
+    assert row[11] == "Gemini 強化失敗:GeminiError"

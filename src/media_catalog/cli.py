@@ -10,7 +10,7 @@ from .analysis_runtime import RuntimePreflightError, build_local_analyzer
 from .batch_analysis import analyze_pending
 from .bootstrap import bootstrap_workspace
 from .database import CatalogDatabase
-from .excel_catalog import write_excel
+from .excel_catalog import read_reviewed_paths, write_excel
 from .inference import LocalAnalyzer
 from .models import Status
 from .run_lock import AnalysisAlreadyRunningError, analysis_run_lock
@@ -134,14 +134,26 @@ def main(
             lock_path = workspace.result_root / ".analysis.lock"
             with analysis_run_lock(lock_path):
                 database = CatalogDatabase(workspace.database_path)
+                reviewed_paths = (
+                    read_reviewed_paths(workspace.excel_path)
+                    if mode is AnalysisMode.FORCE_GEMINI
+                    else None
+                )
                 analyzer = runtime_builder(
                     skill_root=arguments.skill_root,
                     workspace=workspace,
                     model=arguments.model,
                 )
-                recovered_incomplete = database.requeue_incomplete_analysis()
-                recovered_processing = database.requeue_processing()
-                retried_failed = database.requeue_failed()
+                if mode is AnalysisMode.FORCE_GEMINI:
+                    recovered_incomplete = 0
+                    recovered_processing = 0
+                    retried_failed = 0
+                else:
+                    recovered_incomplete = (
+                        database.requeue_incomplete_analysis()
+                    )
+                    recovered_processing = database.requeue_processing()
+                    retried_failed = database.requeue_failed()
                 if (
                     recovered_incomplete
                     or recovered_processing
@@ -167,6 +179,7 @@ def main(
                     progress=report_progress,
                     mode=mode,
                     run_id=arguments.run_id,
+                    reviewed_paths=reviewed_paths,
                 )
             marker = (
                 "MEDIA_ANALYSIS_READY"
