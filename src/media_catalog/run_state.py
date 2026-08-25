@@ -392,6 +392,63 @@ class RunStateStore:
             )
         return cursor.rowcount
 
+    def record_recovery(self, run_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE analysis_runs
+                SET recovery_count = recovery_count + 1, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (_now(), run_id),
+            )
+        self._require_updated(cursor.rowcount, run_id)
+
+    def fail_repeated_crashes(self, run_id: str) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE video_segments
+                SET status = 'failed', error = 'worker_crashed_repeatedly',
+                    updated_at = ?
+                WHERE run_id = ? AND status = 'pending' AND crash_count >= 2
+                """,
+                (_now(), run_id),
+            )
+        return cursor.rowcount
+
+    def segment_progress(
+        self, video_id: str, segment_id: str | None
+    ) -> tuple[int, int]:
+        with self._connect() as connection:
+            total_row = connection.execute(
+                "SELECT COUNT(*) FROM video_segments WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()
+            current_row = (
+                connection.execute(
+                    "SELECT segment_index FROM video_segments "
+                    "WHERE video_id = ? AND segment_id = ?",
+                    (video_id, segment_id),
+                ).fetchone()
+                if segment_id is not None
+                else None
+            )
+        total = int(total_row[0]) if total_row is not None else 0
+        current = int(current_row[0]) + 1 if current_row is not None else 0
+        return current, total
+
+    def gemini_usage(self, video_id: str) -> tuple[int, int]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT segment_count, frame_count FROM gemini_usage "
+                "WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()
+        if row is None:
+            return 0, 0
+        return int(row["segment_count"]), int(row["frame_count"])
+
     def consume_gemini_slot(
         self,
         video_id: str,
@@ -472,6 +529,7 @@ class RunStateStore:
             recovery_count=row["recovery_count"],
             excel_sync_pending=bool(row["excel_sync_pending"]),
         )
+
     @staticmethod
     def _to_segment(row: sqlite3.Row) -> VideoSegment:
         return VideoSegment(
