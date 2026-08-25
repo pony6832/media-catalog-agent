@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -19,13 +20,16 @@ class WorkerProcess(Protocol):
 
     def terminate(self) -> None: ...
 
+    def communicate(self) -> tuple[object, object]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class SupervisorSnapshot:
     status: str
     worker_alive: bool
-    run: AnalysisRun
+    run: AnalysisRun | None
     exit_code: int | None = None
+    error_text: str = ""
 
 
 def _spawn_process(arguments: list[str]) -> WorkerProcess:
@@ -35,6 +39,28 @@ def _spawn_process(arguments: list[str]) -> WorkerProcess:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _spawn_catalog_process(arguments: list[str]) -> WorkerProcess:
+    return subprocess.Popen(
+        arguments,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+    )
+
+
+def _sanitize_process_message(value: str) -> str:
+    cleaned = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    cleaned = re.sub(
+        r"(?i)(GEMINI_API_KEY|GOOGLE_API_KEY)\s*=\s*\S+",
+        r"\1=[REDACTED]",
+        cleaned,
+    )
+    return cleaned[-240:] or "建立媒體清冊失敗"
 
 
 def _heartbeat_is_fresh(run: AnalysisRun) -> bool:
@@ -56,6 +82,9 @@ class WorkerSupervisor:
         *,
         python_executable: Path | str = sys.executable,
         process_factory: Callable[[list[str]], WorkerProcess] = _spawn_process,
+        catalog_process_factory: Callable[
+            [list[str]], WorkerProcess
+        ] = _spawn_catalog_process,
         store_factory: Callable[[MediaWorkspace], RunStateStore] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         heartbeat_is_fresh: Callable[[AnalysisRun], bool] = _heartbeat_is_fresh,
@@ -63,6 +92,7 @@ class WorkerSupervisor:
     ) -> None:
         self.python_executable = str(python_executable)
         self.process_factory = process_factory
+        self.catalog_process_factory = catalog_process_factory
         self.store_factory = store_factory or (
             lambda workspace: RunStateStore(
                 workspace.database_path, excel_path=workspace.excel_path
@@ -75,12 +105,52 @@ class WorkerSupervisor:
         self.store: RunStateStore | None = None
         self.run_id: str | None = None
         self.process: WorkerProcess | None = None
+        self.catalog_process: WorkerProcess | None = None
+        self.catalog_workspace: MediaWorkspace | None = None
+        self.catalog_skill_root: Path | None = None
         self.arguments: list[str] | None = None
         self.launch_count = 0
         self._restart_used = False
         self._stale_since: float | None = None
         self._launched_at: float | None = None
         self._safe_stop_requested = False
+        self._catalog_stop_requested = False
+        self._catalog_terminal_status: str | None = None
+        self._catalog_exit_code: int | None = None
+        self._catalog_error_text = ""
+
+    @property
+    def is_busy(self) -> bool:
+        processes = (self.catalog_process, self.process)
+        return any(
+            process is not None and process.poll() is None
+            for process in processes
+        )
+
+    def start_catalog(self, root: Path, skill_root: Path) -> int:
+        if self.is_busy:
+            return self._active_process_id()
+        workspace = MediaWorkspace.from_root(root)
+        self.workspace = None
+        self.store = None
+        self.run_id = None
+        self.process = None
+        self.arguments = None
+        self.catalog_workspace = workspace
+        self.catalog_skill_root = Path(skill_root).resolve()
+        self._catalog_stop_requested = False
+        self._catalog_terminal_status = None
+        self._catalog_exit_code = None
+        self._catalog_error_text = ""
+        arguments = [
+            self.python_executable,
+            "-m",
+            "media_catalog.cli",
+            "start",
+            str(workspace.root),
+        ]
+        self.catalog_process = self.catalog_process_factory(arguments)
+        return int(getattr(self.catalog_process, "pid", 1))
 
     def start(self, root: Path, skill_root: Path) -> int:
         if self.process is not None and self.process.poll() is None:
@@ -126,6 +196,46 @@ class WorkerSupervisor:
         return self._process_id()
 
     def poll(self) -> SupervisorSnapshot:
+        if self.catalog_process is not None:
+            exit_code = self.catalog_process.poll()
+            if exit_code is None:
+                return SupervisorSnapshot("cataloging", True, None)
+            process = self.catalog_process
+            self.catalog_process = None
+            output, _ = process.communicate()
+            if self._catalog_stop_requested:
+                self._catalog_terminal_status = "stopped"
+                self._catalog_exit_code = exit_code
+                return SupervisorSnapshot("stopped", False, None, exit_code)
+            if exit_code != 0:
+                error_text = _sanitize_process_message(str(output or ""))
+                self._catalog_terminal_status = "error"
+                self._catalog_exit_code = exit_code
+                self._catalog_error_text = error_text
+                return SupervisorSnapshot(
+                    "error", False, None, exit_code, error_text
+                )
+            workspace = self.catalog_workspace
+            skill_root = self.catalog_skill_root
+            if workspace is None or skill_root is None:
+                raise RuntimeError("Catalog process lost its workspace")
+            self._catalog_terminal_status = None
+            self._catalog_exit_code = None
+            self._catalog_error_text = ""
+            self.start(workspace.root, skill_root)
+            return self.poll()
+
+        if self.process is None and self.run_id is None:
+            if self._catalog_terminal_status is not None:
+                return SupervisorSnapshot(
+                    self._catalog_terminal_status,
+                    False,
+                    None,
+                    self._catalog_exit_code,
+                    self._catalog_error_text,
+                )
+            return SupervisorSnapshot("idle", False, None)
+
         run = self._require_run()
         if self.process is None:
             return SupervisorSnapshot("idle", False, run)
@@ -172,6 +282,11 @@ class WorkerSupervisor:
         return SupervisorSnapshot("restarting", True, self._require_run())
 
     def request_safe_stop(self) -> None:
+        if self.catalog_process is not None:
+            self._catalog_stop_requested = True
+            if self.catalog_process.poll() is None:
+                self.catalog_process.terminate()
+            return
         if self.store is None or self.run_id is None:
             return
         self._safe_stop_requested = True
@@ -214,3 +329,9 @@ class WorkerSupervisor:
         if self.process is None:
             raise RuntimeError("Worker process was not launched")
         return int(getattr(self.process, "pid", self.launch_count))
+
+    def _active_process_id(self) -> int:
+        for process in (self.catalog_process, self.process):
+            if process is not None and process.poll() is None:
+                return int(getattr(process, "pid", 1))
+        raise RuntimeError("Supervisor has no active process")

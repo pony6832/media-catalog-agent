@@ -12,6 +12,7 @@ from media_catalog.supervisor import WorkerSupervisor
 class FakeProcess:
     returncode: int | None = None
     terminate_calls: int = 0
+    output: str = ""
 
     def poll(self) -> int | None:
         return self.returncode
@@ -19,6 +20,9 @@ class FakeProcess:
     def terminate(self) -> None:
         self.terminate_calls += 1
         self.returncode = -15
+
+    def communicate(self) -> tuple[str, None]:
+        return self.output, None
 
 
 class ProcessFactory:
@@ -41,6 +45,105 @@ def prepared_root(tmp_path: Path) -> tuple[Path, Path, RunStateStore, str]:
         root_path=root, video_count=0, image_count=1, total_bytes=5
     )
     return root, workspace.database_path, store, run.run_id
+
+
+def test_start_catalog_launches_refresh_without_creating_workspace_on_ui_thread(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "媒體 資料"
+    root.mkdir()
+    catalog = FakeProcess()
+    factory = ProcessFactory([catalog])
+    supervisor = WorkerSupervisor(
+        python_executable=Path(r"C:\runtime\python.exe"),
+        catalog_process_factory=factory,
+    )
+
+    supervisor.start_catalog(root, Path(r"C:\skill"))
+    snapshot = supervisor.poll()
+
+    assert factory.arguments == [[
+        r"C:\runtime\python.exe",
+        "-m",
+        "media_catalog.cli",
+        "start",
+        str(root.resolve()),
+    ]]
+    assert snapshot.status == "cataloging"
+    assert snapshot.run is None
+    assert snapshot.worker_alive is True
+    assert supervisor.is_busy is True
+
+
+def test_successful_catalog_automatically_starts_analysis(tmp_path: Path) -> None:
+    root = tmp_path / "中文 & media"
+    root.mkdir()
+    (root / "sample.jpg").write_bytes(b"image")
+    catalog = FakeProcess(returncode=0, output="MEDIA_CATALOG_READY")
+    analysis = FakeProcess()
+
+    def catalog_factory(arguments: list[str]) -> FakeProcess:
+        assert arguments[3] == "start"
+        bootstrap_workspace(root)
+        return catalog
+
+    analysis_factory = ProcessFactory([analysis])
+    supervisor = WorkerSupervisor(
+        python_executable=Path(r"C:\runtime\python.exe"),
+        process_factory=analysis_factory,
+        catalog_process_factory=catalog_factory,
+    )
+
+    supervisor.start_catalog(root, Path(r"C:\skill"))
+    snapshot = supervisor.poll()
+
+    assert snapshot.status == "starting"
+    assert snapshot.run is not None
+    assert analysis_factory.arguments[0][3] == "analyze-all"
+
+
+def test_failed_catalog_does_not_start_analysis_or_expose_environment_value(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    catalog = FakeProcess(
+        returncode=2,
+        output=(
+            "MEDIA_CATALOG_ERROR GEMINI_"
+            "API_KEY=secret-value permission denied"
+        ),
+    )
+    factory = ProcessFactory([catalog])
+    supervisor = WorkerSupervisor(catalog_process_factory=factory)
+
+    supervisor.start_catalog(root, tmp_path / "skill")
+    snapshot = supervisor.poll()
+
+    assert snapshot.status == "error"
+    assert snapshot.worker_alive is False
+    assert "permission denied" in snapshot.error_text
+    assert "secret-value" not in snapshot.error_text
+    assert len(factory.arguments) == 1
+
+
+def test_safe_stop_terminates_only_the_active_catalog_process(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    catalog = FakeProcess()
+    supervisor = WorkerSupervisor(
+        catalog_process_factory=ProcessFactory([catalog])
+    )
+    supervisor.start_catalog(root, tmp_path / "skill")
+
+    supervisor.request_safe_stop()
+    snapshot = supervisor.poll()
+
+    assert catalog.terminate_calls == 1
+    assert snapshot.status == "stopped"
+    assert snapshot.run is None
 
 
 def test_supervisor_launches_headless_worker_with_argument_array(
