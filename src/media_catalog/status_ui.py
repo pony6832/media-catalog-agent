@@ -537,29 +537,74 @@ class StatusApplication:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="media-catalog-status")
-    parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--skill-root", type=Path, required=True)
+    parser.add_argument("--root", type=Path, default=None)
+    parser.add_argument("--skill-root", type=Path, default=None)
     return parser
+
+
+def _create_tk_root():
+    import tkinter as tk
+
+    try:
+        return tk.Tk()
+    except tk.TclError as error:
+        raise RuntimeError(f"Tkinter 無法啟動：{error}") from error
+
+
+def _show_startup_error(root, title: str, message: str) -> None:
+    from tkinter import messagebox
+
+    root.withdraw()
+    messagebox.showerror(title, message, parent=root)
+    root.destroy()
+
+
+def _default_skill_root() -> Path:
+    candidate = Path(sys.prefix).resolve().parent
+    launcher = candidate / "scripts" / "run_media_analysis_ui.ps1"
+    if not launcher.is_file():
+        raise WorkspacePathError(
+            "無法從私有 runtime 判斷 Skill 路徑，請重新執行安裝器"
+        )
+    return candidate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
-        workspace = MediaWorkspace.from_root(arguments.root)
-        if not workspace.database_path.is_file() or not workspace.excel_path.is_file():
-            raise WorkspacePathError("找不到媒體清冊，請先建立清冊")
-        import tkinter as tk
+        root = _create_tk_root()
+    except (OSError, RuntimeError) as error:
+        print(f"MEDIA_STATUS_UI_ERROR {error}", file=sys.stderr)
+        return 2
 
-        root = tk.Tk()
+    try:
+        skill_root = (
+            arguments.skill_root.resolve()
+            if arguments.skill_root is not None
+            else _default_skill_root()
+        )
+        media_root = None
+        if arguments.root is not None:
+            workspace = MediaWorkspace.from_root(arguments.root)
+            if (
+                not workspace.database_path.is_file()
+                or not workspace.excel_path.is_file()
+            ):
+                raise WorkspacePathError("找不到媒體清冊，請先建立清冊")
+            media_root = workspace.root
         StatusApplication(
             root,
-            media_root=workspace.root,
-            skill_root=arguments.skill_root,
+            media_root=media_root,
+            skill_root=skill_root,
         )
         root.mainloop()
         return 0
     except (OSError, RuntimeError, WorkspacePathError) as error:
-        print(f"MEDIA_STATUS_UI_ERROR {error}", file=sys.stderr)
+        _show_startup_error(
+            root,
+            "Media Catalog A+ 啟動失敗",
+            str(error),
+        )
         return 2
 
 

@@ -1,19 +1,26 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$RootPath
+    [string]$RootPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $skillRoot = Split-Path -Parent $PSScriptRoot
-$runtimePython = Join-Path $skillRoot '.runtime\Scripts\python.exe'
+$runtimePythonw = Join-Path $skillRoot '.runtime\Scripts\pythonw.exe'
 
-if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $runtimePythonw -PathType Leaf)) {
     [Console]::Error.WriteLine(
-        "MEDIA_STATUS_UI_ERROR missing_skill_runtime=$runtimePython"
+        "MEDIA_STATUS_UI_ERROR missing_skill_runtime=$runtimePythonw"
     )
     exit 2
 }
 
-& $runtimePython -m media_catalog.status_ui --root $RootPath --skill-root $skillRoot
+$uiArguments = @(
+    '-m', 'media_catalog.status_ui',
+    '--skill-root', $skillRoot
+)
+if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
+    $uiArguments += @('--root', $RootPath)
+}
+
+& $runtimePythonw @uiArguments
 exit $LASTEXITCODE
