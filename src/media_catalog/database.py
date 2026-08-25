@@ -168,6 +168,22 @@ class CatalogDatabase:
             self.set_status(record.id, Status.PENDING)
         return len(incomplete)
 
+    def requeue_for_force(self, record_ids: Sequence[str]) -> int:
+        identities = tuple(dict.fromkeys(record_ids))
+        if not identities:
+            return 0
+        placeholders = ", ".join("?" for _ in identities)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE media_records
+                SET status = ?, error = NULL, updated_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (Status.PENDING.value, _now(), *identities),
+            )
+        return cursor.rowcount
+
     def set_status(
         self, record_id: str, status: Status, *, error: str | None = None
     ) -> MediaRecord:
@@ -193,6 +209,7 @@ class CatalogDatabase:
         description: str,
         highlights: tuple[str, ...],
         keywords: tuple[str, ...],
+        warning: str | None = None,
     ) -> MediaRecord:
         cleaned_description = description.strip()
         cleaned_highlights = tuple(
@@ -203,12 +220,17 @@ class CatalogDatabase:
         )
         if not cleaned_description or not cleaned_highlights or not cleaned_keywords:
             raise ValueError("Analysis fields must all contain useful text")
+        cleaned_warning = (
+            " ".join(warning.replace("\r", " ").replace("\n", " ").split())[:240]
+            if warning
+            else None
+        )
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE media_records
                 SET status = ?, description = ?, highlights_json = ?,
-                    keywords_json = ?, error = NULL, updated_at = ?
+                    keywords_json = ?, error = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -216,6 +238,7 @@ class CatalogDatabase:
                     cleaned_description,
                     json.dumps(cleaned_highlights, ensure_ascii=False),
                     json.dumps(cleaned_keywords, ensure_ascii=False),
+                    cleaned_warning,
                     _now(),
                     record_id,
                 ),

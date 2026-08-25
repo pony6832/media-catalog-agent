@@ -140,3 +140,50 @@ def test_requeue_incomplete_analysis_recovers_legacy_skipped_rows(
 
     assert database.requeue_incomplete_analysis() == 1
     assert database.get_record(skipped.id).status is Status.PENDING
+
+
+def test_requeue_for_force_preserves_old_analysis_until_replacement(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"photo")
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    discovered = database.upsert_discovered(
+        source, "fingerprint", "image/jpeg"
+    )
+    record = database.save_analysis(
+        discovered.id,
+        description="舊描述",
+        highlights=("舊重點",),
+        keywords=("舊關鍵字",),
+    )
+
+    assert database.requeue_for_force((record.id,)) == 1
+    queued = database.get_record(record.id)
+
+    assert queued is not None
+    assert queued.status is Status.PENDING
+    assert queued.description == "舊描述"
+    assert queued.highlights == ("舊重點",)
+    assert queued.keywords == ("舊關鍵字",)
+    assert queued.error is None
+
+
+def test_save_analysis_can_keep_a_nonfatal_force_warning(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"photo")
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    record = database.upsert_discovered(source, "fingerprint", "image/jpeg")
+
+    saved = database.save_analysis(
+        record.id,
+        description="本地描述",
+        highlights=("本地重點",),
+        keywords=("本地",),
+        warning="Gemini 強化失敗:GeminiError",
+    )
+
+    assert saved.status is Status.ANALYZED
+    assert saved.error == "Gemini 強化失敗:GeminiError"
