@@ -7,6 +7,7 @@ from pathlib import Path
 from .gemini_client import GeminiClient, GeminiSegmentRequest
 from .inference import Analysis, ImagePreparer, LocalAnalyzer
 from .models import MediaRecord
+from .run_state import VideoSegment
 from .stage_runner import StagePolicy, StageRunner
 
 
@@ -56,6 +57,46 @@ class ForceImageAnalyzer:
             warning=f"Gemini 強化失敗:{error_type}",
             gemini_used=False,
         )
+
+
+def _spread_segments(
+    segments: tuple[VideoSegment, ...], limit: int
+) -> tuple[VideoSegment, ...]:
+    if limit <= 0 or not segments:
+        return ()
+    if len(segments) <= limit:
+        return segments
+    if limit == 1:
+        return (segments[len(segments) // 2],)
+    indexes = tuple(
+        round(index * (len(segments) - 1) / (limit - 1))
+        for index in range(limit)
+    )
+    return tuple(segments[index] for index in indexes)
+
+
+def select_force_segments(
+    segments: Iterable[VideoSegment], *, limit: int = 12
+) -> tuple[VideoSegment, ...]:
+    if limit < 1:
+        raise ValueError("force Gemini segment limit must be positive")
+    ordered = tuple(sorted(segments, key=lambda item: item.segment_index))
+    issues = tuple(
+        item for item in ordered if item.needs_review or item.error is not None
+    )
+    if len(issues) >= limit:
+        return tuple(
+            sorted(
+                _spread_segments(issues, limit),
+                key=lambda item: item.segment_index,
+            )
+        )
+    issue_ids = {item.segment_id for item in issues}
+    remaining = tuple(
+        item for item in ordered if item.segment_id not in issue_ids
+    )
+    selected = issues + _spread_segments(remaining, limit - len(issues))
+    return tuple(sorted(selected, key=lambda item: item.segment_index))
 
 
 @dataclass(frozen=True, slots=True)

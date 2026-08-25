@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .analysis_mode import AnalysisMode
+from .force_gemini import select_force_segments
 from .gemini_client import GeminiSegmentRequest
 from .inference import (
     Analysis,
@@ -28,6 +30,7 @@ class VideoAnalysisResult:
     gemini_segments: int
     needs_review_segments: int
     failed_segments: int
+    warning: str | None = None
 
 
 class SegmentPipeline:
@@ -53,8 +56,13 @@ class SegmentPipeline:
         self.evidence_extractor = evidence_extractor
 
     def analyze_video(
-        self, record: MediaRecord, run_id: str
+        self,
+        record: MediaRecord,
+        run_id: str,
+        *,
+        mode: AnalysisMode = AnalysisMode.AUTO,
     ) -> VideoAnalysisResult:
+        force_gemini = mode is AnalysisMode.FORCE_GEMINI
         segments = self.store.list_segments(record.id)
         if segments:
             self.store.requeue_stale_processing(run_id)
@@ -101,7 +109,12 @@ class SegmentPipeline:
                 run_id, record.id, segment.segment_id
             )
             try:
-                self._analyze_segment(record, segment, ocr_text=ocr_text)
+                self._analyze_segment(
+                    record,
+                    segment,
+                    ocr_text=ocr_text,
+                    allow_cloud=not force_gemini,
+                )
             finally:
                 self.store.set_current_item(run_id, None, None)
 
@@ -109,6 +122,17 @@ class SegmentPipeline:
         failed = [segment for segment in persisted if segment.status != "completed"]
         if failed:
             raise AnalysisError(f"{len(failed)} video segments are incomplete")
+
+        warning = None
+        if force_gemini:
+            failed_force_segments = self._enhance_force_segments(
+                record, persisted, ocr_text=ocr_text
+            )
+            persisted = self.store.list_segments(record.id)
+            if failed_force_segments:
+                warning = (
+                    f"Gemini 強化失敗:{failed_force_segments} 段"
+                )
 
         analyses = tuple(self._best_analysis(segment) for segment in persisted)
         summary = self.stage_runner.run(
@@ -129,6 +153,7 @@ class SegmentPipeline:
                 segment.needs_review for segment in persisted
             ),
             failed_segments=0,
+            warning=warning,
         )
 
     def _analyze_segment(
@@ -137,6 +162,7 @@ class SegmentPipeline:
         segment: VideoSegment,
         *,
         ocr_text: str,
+        allow_cloud: bool = True,
     ) -> None:
         self.store.mark_segment_status(segment.segment_id, "processing")
         segment_range = self._segment_range(segment)
@@ -205,7 +231,7 @@ class SegmentPipeline:
             self.gemini_client is not None
             and getattr(self.gemini_client, "is_configured", True)
         )
-        if issues and gemini_configured:
+        if issues and gemini_configured and allow_cloud:
             granted = self.store.consume_gemini_slot(
                 record.id, frame_count=len(selected)
             )
@@ -232,7 +258,7 @@ class SegmentPipeline:
                 error = "cloud_quota_exhausted"
         elif issues:
             needs_review = True
-            error = "cloud_unavailable"
+            error = "force_pending" if not allow_cloud else "cloud_unavailable"
 
         self.store.save_segment_result(
             segment.segment_id,
@@ -244,6 +270,63 @@ class SegmentPipeline:
             error=error,
             retry_count_increment=retry_count_increment,
         )
+
+    def _enhance_force_segments(
+        self,
+        record: MediaRecord,
+        segments: list[VideoSegment],
+        *,
+        ocr_text: str,
+    ) -> int:
+        failures = 0
+        for segment in select_force_segments(segments, limit=12):
+            if segment.cloud_result_json is not None:
+                continue
+            local_analysis = self._best_analysis(segment)
+            selected = segment.selected_frames
+            if not selected or not self.store.consume_gemini_slot(
+                record.id, frame_count=len(selected)
+            ):
+                failures += 1
+                self.store.save_segment_result(
+                    segment.segment_id,
+                    status="completed",
+                    selected_frames=selected,
+                    local_analysis=local_analysis,
+                    cloud_analysis=None,
+                    needs_review=True,
+                    error="cloud_quota_exhausted",
+                )
+                continue
+            cloud = self.stage_runner.run(
+                "gemini_force_video",
+                lambda _timeout: self.gemini_client.analyze(
+                    GeminiSegmentRequest(
+                        frames=selected,
+                        ocr_text=ocr_text,
+                        local_analysis=local_analysis,
+                    )
+                ),
+                StagePolicy(90, 1),
+            )
+            cloud_analysis = cloud.value if cloud.ok else None
+            if cloud_analysis is None:
+                failures += 1
+            self.store.save_segment_result(
+                segment.segment_id,
+                status="completed",
+                selected_frames=selected,
+                local_analysis=local_analysis,
+                cloud_analysis=cloud_analysis,
+                needs_review=cloud_analysis is None,
+                error=(
+                    None
+                    if cloud_analysis is not None
+                    else f"cloud_failed:{cloud.error_type or 'unknown'}"
+                ),
+                retry_count_increment=max(0, cloud.attempts - 1),
+            )
+        return failures
 
     def _video_ocr(self, source: Path) -> str:
         if self.evidence_extractor is None:

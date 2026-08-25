@@ -5,9 +5,11 @@ from media_catalog.force_gemini import (
     ForceImageAnalyzer,
     ForceImageResult,
     plan_force_run,
+    select_force_segments,
 )
 from media_catalog.inference import Analysis
 from media_catalog.stage_runner import StageRunner
+from media_catalog.run_state import VideoSegment
 from media_catalog.models import MediaRecord, Status
 
 
@@ -138,3 +140,28 @@ def test_force_image_retries_then_keeps_local_result_with_warning(
     assert result.gemini_used is False
     assert result.warning == "Gemini 強化失敗:RuntimeError"
     assert len(gemini.requests) == 2
+
+
+def test_force_segment_selection_prioritizes_issues_then_spreads_time() -> None:
+    segments = tuple(
+        VideoSegment(
+            segment_id=f"video:{index}",
+            run_id="run-1",
+            video_id="video",
+            segment_index=index,
+            start_seconds=index * 10,
+            end_seconds=(index + 1) * 10,
+            status="completed",
+            local_result_json="{}",
+            needs_review=index in {1, 13},
+        )
+        for index in range(15)
+    )
+
+    selected = select_force_segments(segments, limit=4)
+
+    assert len(selected) == 4
+    assert {1, 13}.issubset({item.segment_index for item in selected})
+    assert [item.segment_index for item in selected] == sorted(
+        item.segment_index for item in selected
+    )

@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from media_catalog.gemini_client import GeminiError, GeminiSegmentRequest
+from media_catalog.analysis_mode import AnalysisMode
 from media_catalog.inference import Analysis, AnalysisError
 from media_catalog.models import MediaRecord, Status
 from media_catalog.run_state import RunStateStore, VideoSegment
@@ -298,3 +299,50 @@ def test_cloud_failure_keeps_local_checkpoint_and_marks_review(
     assert segment.cloud_result_json is None
     assert segment.error == "cloud_failed:GeminiError"
     assert gemini.calls == 2
+
+
+def test_force_mode_analyzes_all_locally_then_sends_at_most_twelve(
+    tmp_path: Path,
+) -> None:
+    local = RecordingLocalAnalyzer(GOOD)
+    gemini = RecordingGemini()
+    pipeline = SegmentPipeline(
+        segmenter=FakeSegmenter(15),
+        selector=ThreeFrameSelector(),
+        local_analyzer=local,
+        gemini_client=gemini,
+        store=_store(tmp_path),
+        output_root=tmp_path / "segments",
+    )
+
+    result = pipeline.analyze_video(
+        _video_record(tmp_path), "run-1", mode=AnalysisMode.FORCE_GEMINI
+    )
+
+    assert local.segment_indexes == list(range(15))
+    assert len(gemini.requests) == 12
+    assert result.gemini_segments == 12
+    assert result.warning is None
+
+
+def test_force_mode_cloud_failures_keep_local_video_and_warn(
+    tmp_path: Path,
+) -> None:
+    gemini = FailingGemini()
+    pipeline = SegmentPipeline(
+        segmenter=FakeSegmenter(2),
+        selector=ThreeFrameSelector(),
+        local_analyzer=RecordingLocalAnalyzer(GOOD),
+        gemini_client=gemini,
+        store=_store(tmp_path),
+        output_root=tmp_path / "segments",
+    )
+
+    result = pipeline.analyze_video(
+        _video_record(tmp_path), "run-1", mode=AnalysisMode.FORCE_GEMINI
+    )
+
+    assert result.description == STRONG.description
+    assert result.gemini_segments == 0
+    assert result.warning == "Gemini 強化失敗:2 段"
+    assert gemini.calls == 4

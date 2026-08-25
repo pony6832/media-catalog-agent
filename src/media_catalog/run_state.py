@@ -532,6 +532,24 @@ class RunStateStore:
             return 0, 0
         return int(row["segment_count"]), int(row["frame_count"])
 
+    def reset_video_for_force(self, run_id: str, video_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT analysis_mode FROM analysis_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"Unknown run state item: {run_id}")
+            if run["analysis_mode"] != AnalysisMode.FORCE_GEMINI.value:
+                raise ValueError("video reset requires a force Gemini run")
+            connection.execute(
+                "DELETE FROM video_segments WHERE video_id = ?", (video_id,)
+            )
+            connection.execute(
+                "DELETE FROM gemini_usage WHERE video_id = ?", (video_id,)
+            )
+
     def consume_gemini_slot(
         self,
         video_id: str,

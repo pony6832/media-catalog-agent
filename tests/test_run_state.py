@@ -192,3 +192,28 @@ def test_completed_force_run_creates_the_next_generation(tmp_path: Path) -> None
     assert second.run_id != first.run_id
     assert second.force_generation == 2
     assert needs_prepare is True
+
+
+def test_reset_video_for_force_clears_segments_and_quota(
+    tmp_path: Path,
+) -> None:
+    store = RunStateStore(tmp_path / "catalog.sqlite")
+    store.create_run(
+        "run-1",
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=10,
+        analysis_mode=AnalysisMode.FORCE_GEMINI,
+    )
+    store.upsert_segments(
+        "run-1",
+        "video-1",
+        (VideoSegment("video-1:0", "run-1", "video-1", 0, 0, 10),),
+    )
+    assert store.consume_gemini_slot("video-1", frame_count=3) is True
+
+    store.reset_video_for_force("run-1", "video-1")
+
+    assert store.list_segments("video-1") == []
+    assert store.gemini_usage("video-1") == (0, 0)
