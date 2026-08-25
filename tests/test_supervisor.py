@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from media_catalog.analysis_mode import AnalysisMode
 from media_catalog.bootstrap import bootstrap_workspace
 from media_catalog.run_state import RunStateStore, VideoSegment
 from media_catalog import supervisor as supervisor_module
@@ -102,19 +103,18 @@ def test_start_catalog_launches_refresh_without_creating_workspace_on_ui_thread(
     assert supervisor.is_busy is True
 
 
-def test_successful_catalog_automatically_starts_analysis(tmp_path: Path) -> None:
+def test_successful_catalog_waits_for_user_mode_choice(tmp_path: Path) -> None:
     root = tmp_path / "中文 & media"
     root.mkdir()
     (root / "sample.jpg").write_bytes(b"image")
     catalog = FakeProcess(returncode=0, output="MEDIA_CATALOG_READY")
-    analysis = FakeProcess()
 
     def catalog_factory(arguments: list[str]) -> FakeProcess:
         assert arguments[3] == "start"
         bootstrap_workspace(root)
         return catalog
 
-    analysis_factory = ProcessFactory([analysis])
+    analysis_factory = ProcessFactory([])
     supervisor = WorkerSupervisor(
         python_executable=Path(r"C:\runtime\python.exe"),
         process_factory=analysis_factory,
@@ -124,9 +124,34 @@ def test_successful_catalog_automatically_starts_analysis(tmp_path: Path) -> Non
     supervisor.start_catalog(root, Path(r"C:\skill"))
     snapshot = supervisor.poll()
 
-    assert snapshot.status == "starting"
-    assert snapshot.run is not None
-    assert analysis_factory.arguments[0][3] == "analyze-all"
+    assert snapshot.status == "catalog_ready"
+    assert snapshot.run is None
+    assert snapshot.worker_alive is False
+    assert analysis_factory.arguments == []
+
+
+def test_force_start_passes_mode_and_exact_run_id_to_worker(
+    tmp_path: Path,
+) -> None:
+    root, _, store, _ = prepared_root(tmp_path)
+    process = FakeProcess()
+    factory = ProcessFactory([process])
+    supervisor = WorkerSupervisor(
+        python_executable=Path(r"C:\runtime\python.exe"),
+        process_factory=factory,
+        store_factory=lambda _workspace: store,
+    )
+
+    supervisor.start(
+        root,
+        Path(r"C:\skill"),
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+
+    arguments = factory.arguments[0]
+    assert arguments[arguments.index("--mode") + 1] == "force-gemini"
+    run_id = arguments[arguments.index("--run-id") + 1]
+    assert run_id.startswith("force-")
 
 
 def test_failed_catalog_does_not_start_analysis_or_expose_environment_value(
@@ -196,6 +221,10 @@ def test_supervisor_launches_headless_worker_with_argument_array(
         str(root.resolve()),
         "--skill-root",
         str(Path(r"C:\skill").resolve()),
+        "--mode",
+        "auto",
+        "--run-id",
+        store.run_id_for_root(root),
     ]]
 
 

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from .analysis_mode import AnalysisMode
 from .database import CatalogDatabase
 from .process_utils import HIDDEN_PROCESS_CREATION_FLAGS
 from .run_state import AnalysisRun, RunStateStore
@@ -155,7 +156,13 @@ class WorkerSupervisor:
         self.catalog_process = self.catalog_process_factory(arguments)
         return int(getattr(self.catalog_process, "pid", 1))
 
-    def start(self, root: Path, skill_root: Path) -> int:
+    def start(
+        self,
+        root: Path,
+        skill_root: Path,
+        *,
+        mode: AnalysisMode = AnalysisMode.AUTO,
+    ) -> int:
         if self.process is not None and self.process.poll() is None:
             return self._process_id()
         workspace = MediaWorkspace.from_root(root)
@@ -165,7 +172,7 @@ class WorkerSupervisor:
             )
         store = self.store_factory(workspace)
         records = CatalogDatabase(workspace.database_path).list_records()
-        run = store.ensure_run(
+        run, _ = store.begin_run(
             root_path=workspace.root,
             video_count=sum(
                 record.media_type.startswith("video/") for record in records
@@ -178,6 +185,7 @@ class WorkerSupervisor:
                 for record in records
                 if record.path.is_file()
             ),
+            mode=mode,
         )
         store.clear_stop(run.run_id)
         self.workspace = workspace
@@ -191,7 +199,12 @@ class WorkerSupervisor:
             str(workspace.root),
             "--skill-root",
             str(Path(skill_root).resolve()),
+            "--mode",
+            mode.value,
+            "--run-id",
+            run.run_id,
         ]
+        self._catalog_terminal_status = None
         self._restart_used = False
         self._safe_stop_requested = False
         self._stale_since = None
@@ -222,11 +235,12 @@ class WorkerSupervisor:
             skill_root = self.catalog_skill_root
             if workspace is None or skill_root is None:
                 raise RuntimeError("Catalog process lost its workspace")
-            self._catalog_terminal_status = None
-            self._catalog_exit_code = None
+            self._catalog_terminal_status = "catalog_ready"
+            self._catalog_exit_code = exit_code
             self._catalog_error_text = ""
-            self.start(workspace.root, skill_root)
-            return self.poll()
+            return SupervisorSnapshot(
+                "catalog_ready", False, None, exit_code
+            )
 
         if self.process is None and self.run_id is None:
             if self._catalog_terminal_status is not None:

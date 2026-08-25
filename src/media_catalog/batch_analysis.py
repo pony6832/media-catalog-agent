@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
+from .analysis_mode import AnalysisMode
 from .database import CatalogDatabase
 from .excel_catalog import write_excel
 from .inference import AnalysisError
@@ -39,6 +40,9 @@ def analyze_pending(
     *,
     excel_writer: Callable[[Iterable[MediaRecord], Path], Path] = write_excel,
     progress: ProgressCallback | None = None,
+    mode: AnalysisMode = AnalysisMode.AUTO,
+    run_id: str | None = None,
+    reviewed_paths: set[str] | None = None,
 ) -> BatchAnalysisResult:
     database = CatalogDatabase(workspace.database_path)
     initial_records = database.list_records()
@@ -50,7 +54,7 @@ def analyze_pending(
     total = len(pending)
     run_state = getattr(analyzer, "run_state", None)
     segment_pipeline = getattr(analyzer, "segment_pipeline", None)
-    run_id = None
+    active_run_id = run_id
     excel_sync_pending = False
     if run_state is not None and segment_pipeline is not None:
         video_count = sum(
@@ -64,37 +68,39 @@ def analyze_pending(
             for record in initial_records
             if record.path.is_file()
         )
-        run = run_state.ensure_run(
-            root_path=workspace.root,
-            video_count=video_count,
-            image_count=image_count,
-            total_bytes=total_bytes,
-        )
-        run_id = run.run_id
-        run_state.clear_stop(run_id)
+        if active_run_id is None:
+            run, _ = run_state.begin_run(
+                root_path=workspace.root,
+                video_count=video_count,
+                image_count=image_count,
+                total_bytes=total_bytes,
+                mode=mode,
+            )
+            active_run_id = run.run_id
+        run_state.clear_stop(active_run_id)
 
     def sync_excel() -> None:
         nonlocal excel_sync_pending
         try:
             excel_writer(database.list_records(), workspace.excel_path)
         except PermissionError:
-            if run_state is None or run_id is None:
+            if run_state is None or active_run_id is None:
                 raise
             excel_sync_pending = True
-            run_state.set_excel_sync_pending(run_id, True)
+            run_state.set_excel_sync_pending(active_run_id, True)
         else:
-            if run_state is not None and run_id is not None:
+            if run_state is not None and active_run_id is not None:
                 excel_sync_pending = False
-                run_state.set_excel_sync_pending(run_id, False)
+                run_state.set_excel_sync_pending(active_run_id, False)
 
     def update_run(current_media_id: str | None = None) -> None:
-        if run_state is None or run_id is None:
+        if run_state is None or active_run_id is None:
             return
         records = database.list_records()
         completed_count = sum(has_complete_analysis(record) for record in records)
         failed_count = sum(record.status is Status.FAILED for record in records)
         run_state.update_counts(
-            run_id,
+            active_run_id,
             completed_media=completed_count,
             failed_media=failed_count,
             current_media_id=current_media_id,
@@ -103,14 +109,14 @@ def analyze_pending(
         )
 
     heartbeat = (
-        HeartbeatThread(run_state, run_id)
-        if run_state is not None and run_id is not None
+        HeartbeatThread(run_state, active_run_id)
+        if run_state is not None and active_run_id is not None
         else nullcontext()
     )
     with heartbeat:
         for record in pending:
-            if run_state is not None and run_id is not None:
-                run = run_state.get_run(run_id)
+            if run_state is not None and active_run_id is not None:
+                run = run_state.get_run(active_run_id)
                 if run is not None and run.stop_requested:
                     break
             try:
@@ -137,10 +143,12 @@ def analyze_pending(
             try:
                 if (
                     segment_pipeline is not None
-                    and run_id is not None
+                    and active_run_id is not None
                     and record.media_type.startswith("video/")
                 ):
-                    result = segment_pipeline.analyze_video(record, run_id)
+                    result = segment_pipeline.analyze_video(
+                        record, active_run_id
+                    )
                 else:
                     result = analyzer.analyze(record.path)
                 verify_record_source(record, snapshot)
@@ -178,10 +186,10 @@ def analyze_pending(
         not has_complete_analysis(record)
         for record in database.list_records()
     )
-    if run_state is not None and run_id is not None:
+    if run_state is not None and active_run_id is not None:
         final_records = database.list_records()
         run_state.update_counts(
-            run_id,
+            active_run_id,
             completed_media=sum(
                 has_complete_analysis(record) for record in final_records
             ),

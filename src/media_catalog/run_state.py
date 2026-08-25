@@ -34,9 +34,9 @@ class AnalysisRun:
     stop_requested: bool
     recovery_count: int
     excel_sync_pending: bool
-    analysis_mode: AnalysisMode
-    force_generation: int
-    force_prepared: bool
+    analysis_mode: AnalysisMode = AnalysisMode.AUTO
+    force_generation: int = 0
+    force_prepared: bool = True
 
 
 @dataclass(frozen=True, slots=True)

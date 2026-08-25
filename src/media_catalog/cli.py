@@ -5,6 +5,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from .analysis_mode import AnalysisMode
 from .analysis_runtime import RuntimePreflightError, build_local_analyzer
 from .batch_analysis import analyze_pending
 from .bootstrap import bootstrap_workspace
@@ -46,6 +47,12 @@ def _parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument(
         "--model", default="Qwen3-vl:8b-instruct"
     )
+    analyze_parser.add_argument(
+        "--mode",
+        choices=tuple(mode.value for mode in AnalysisMode),
+        default=AnalysisMode.AUTO.value,
+    )
+    analyze_parser.add_argument("--run-id", default=None)
 
     resume_parser = subparsers.add_parser(
         "resume-processing", help="Return interrupted records to pending."
@@ -107,6 +114,23 @@ def main(
         workspace = _existing_workspace(arguments.root)
 
         if arguments.command == "analyze-all":
+            mode = AnalysisMode(arguments.mode)
+            if mode is AnalysisMode.FORCE_GEMINI and not arguments.run_id:
+                _print_console(
+                    "MEDIA_ANALYSIS_ERROR force-gemini requires --run-id",
+                    stream=sys.stderr,
+                )
+                return 2
+            if (
+                mode is AnalysisMode.AUTO
+                and arguments.run_id
+                and str(arguments.run_id).startswith("force-")
+            ):
+                _print_console(
+                    "MEDIA_ANALYSIS_ERROR auto mode cannot use a force run id",
+                    stream=sys.stderr,
+                )
+                return 2
             lock_path = workspace.result_root / ".analysis.lock"
             with analysis_run_lock(lock_path):
                 database = CatalogDatabase(workspace.database_path)
@@ -138,7 +162,11 @@ def main(
                     )
 
                 result = analyze_pending(
-                    workspace, analyzer, progress=report_progress
+                    workspace,
+                    analyzer,
+                    progress=report_progress,
+                    mode=mode,
+                    run_id=arguments.run_id,
                 )
             marker = (
                 "MEDIA_ANALYSIS_READY"
@@ -146,7 +174,8 @@ def main(
                 else "MEDIA_ANALYSIS_INCOMPLETE"
             )
             _print_console(
-                marker + f" analyzed={result.analyzed}"
+                marker + f" mode={mode.value}"
+                f" analyzed={result.analyzed}"
                 f" failed={result.failed}"
                 f" skipped={result.skipped}"
                 f" remaining={result.remaining}"

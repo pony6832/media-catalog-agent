@@ -6,6 +6,8 @@ import pytest
 from openpyxl import load_workbook
 
 import media_catalog.cli as cli_module
+from media_catalog.analysis_mode import AnalysisMode
+from media_catalog.batch_analysis import BatchAnalysisResult
 from media_catalog.bootstrap import bootstrap_workspace
 from media_catalog.cli import main
 from media_catalog.database import CatalogDatabase
@@ -78,9 +80,40 @@ def test_cli_analyze_all_prints_fixed_summary(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert captured.err == ""
     assert captured.out.splitlines()[-1].startswith(
-        "MEDIA_ANALYSIS_READY analyzed=1 failed=0 skipped=0 remaining=0"
+        "MEDIA_ANALYSIS_READY mode=auto analyzed=1 failed=0 skipped=0 remaining=0"
     )
     assert f"catalog={root / '媒體整理成果' / '媒體清冊.xlsx'}" in captured.out
+
+
+def test_force_cli_passes_mode_and_run_id_to_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_batch(*_args, **kwargs):
+        captured.update(kwargs)
+        return BatchAnalysisResult(1, 0, 0, 0)
+
+    monkeypatch.setattr(cli_module, "analyze_pending", fake_batch)
+
+    exit_code = main(
+        [
+            "analyze-all",
+            str(root),
+            "--skill-root",
+            str(tmp_path),
+            "--mode",
+            "force-gemini",
+            "--run-id",
+            "force-root-1",
+        ],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    assert exit_code == 0
+    assert captured["mode"] is AnalysisMode.FORCE_GEMINI
+    assert captured["run_id"] == "force-root-1"
 
 
 def test_cli_analyze_all_recovers_interrupted_and_failed_rows(
