@@ -2,13 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from media_catalog.run_state import AnalysisRun
+from media_catalog.analysis_mode import AnalysisMode
+from media_catalog.bootstrap import bootstrap_workspace
+from media_catalog.force_gemini import ForceGeminiEstimate
 from media_catalog.supervisor import SupervisorSnapshot
 import media_catalog.status_ui as status_ui
-from media_catalog.status_ui import StatusViewModel
+from media_catalog.status_ui import (
+    StatusApplication,
+    StatusViewModel,
+    format_force_confirmation,
+    validate_force_environment,
+)
 from media_catalog.workspace import MediaWorkspace
 
 
@@ -22,7 +31,13 @@ class RecordingSupervisor:
         self.calls.append((root, skill_root))
         return 1
 
-    def start(self, root: Path, skill_root: Path) -> int:
+    def start(
+        self,
+        root: Path,
+        skill_root: Path,
+        *,
+        mode: AnalysisMode = AnalysisMode.AUTO,
+    ) -> int:
         self.analysis_calls.append((root, skill_root))
         return 2
 
@@ -44,6 +59,8 @@ def sample_run(
     images: int = 28,
     status: str = "running",
     excel_sync_pending: bool = False,
+    failed_media: int = 0,
+    analysis_mode: AnalysisMode = AnalysisMode.AUTO,
 ) -> AnalysisRun:
     now = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
     return AnalysisRun(
@@ -55,7 +72,7 @@ def sample_run(
         total_bytes=20_000_000_000,
         total_media=total,
         completed_media=completed,
-        failed_media=0,
+        failed_media=failed_media,
         current_media_id="video-027",
         current_segment_id="video-027:5",
         worker_pid=4321,
@@ -63,6 +80,7 @@ def sample_run(
         stop_requested=False,
         recovery_count=0,
         excel_sync_pending=excel_sync_pending,
+        analysis_mode=analysis_mode,
     )
 
 
@@ -251,3 +269,101 @@ def test_view_model_prioritizes_excel_waiting_over_completed_status() -> None:
 
     assert model.light_color == "red"
     assert model.status_text == "等待 Excel 關閉"
+
+
+def test_force_environment_requires_key_and_exact_model() -> None:
+    assert "API Key" in validate_force_environment({})
+    assert validate_force_environment(
+        {"GEMINI_API_KEY": "configured"}
+    ) is None
+    assert "gemini-3.7-flash" in validate_force_environment(
+        {
+            "GEMINI_API_KEY": "configured",
+            "GEMINI_MODEL": "gemini-other",
+        }
+    )
+    assert (
+        validate_force_environment(
+            {
+                "GEMINI_API_KEY": "configured",
+                "GEMINI_MODEL": "gemini-3.7-flash",
+            }
+        )
+        is None
+    )
+
+
+def test_force_confirmation_shows_normal_and_retry_limits() -> None:
+    text = format_force_confirmation(ForceGeminiEstimate(2, 3, 4, 27, 54))
+
+    assert "影片：2" in text
+    assert "照片：3" in text
+    assert "已審核：4" in text
+    assert "正常強化請求上限：27" in text
+    assert "含重試的最壞上限：54" in text
+    assert "完整影片" in text
+
+
+def test_force_view_model_reports_nonfatal_fallback_count() -> None:
+    model = StatusViewModel.from_run(
+        sample_run(
+            failed_media=2,
+            analysis_mode=AnalysisMode.FORCE_GEMINI,
+        ),
+        worker_alive=True,
+        supervisor_status="running",
+        now=datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert model.status_text == "Gemini 強制強化中"
+    assert model.failure_text == "失敗／降級：2"
+
+
+def _force_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[status_ui.StatusApplication, Mock, Mock]:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    (media_root / "photo.jpg").write_bytes(b"photo")
+    workspace = bootstrap_workspace(media_root).workspace
+    supervisor = Mock()
+    supervisor.is_busy = False
+    messagebox = Mock()
+    app = StatusApplication.__new__(StatusApplication)
+    app.media_root = media_root.resolve()
+    app.workspace = workspace
+    app.skill_root = tmp_path.resolve()
+    app.supervisor = supervisor
+    app.messagebox = messagebox
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+    return app, supervisor, messagebox
+
+
+def test_force_button_confirms_then_starts_force_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, supervisor, messagebox = _force_app(tmp_path, monkeypatch)
+    messagebox.askokcancel.return_value = True
+
+    app._start_force_gemini()
+
+    assert (
+        supervisor.start.call_args.kwargs["mode"]
+        is AnalysisMode.FORCE_GEMINI
+    )
+    assert (
+        "正常強化請求上限"
+        in messagebox.askokcancel.call_args.args[1]
+    )
+
+
+def test_cancelled_force_confirmation_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, supervisor, messagebox = _force_app(tmp_path, monkeypatch)
+    messagebox.askokcancel.return_value = False
+
+    app._start_force_gemini()
+
+    supervisor.start.assert_not_called()

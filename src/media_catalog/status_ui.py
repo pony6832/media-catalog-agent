@@ -6,12 +6,41 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Callable, Sequence
 
+from .analysis_mode import AnalysisMode
 from .database import CatalogDatabase
+from .excel_catalog import read_reviewed_paths
+from .force_gemini import (
+    ForceGeminiEstimate,
+    plan_force_run,
+)
 from .run_state import AnalysisRun
 from .supervisor import SupervisorSnapshot, WorkerSupervisor
 from .workspace import MediaWorkspace, WorkspacePathError
+
+
+def validate_force_environment(environ: Mapping[str, str]) -> str | None:
+    if not environ.get("GEMINI_API_KEY", "").strip():
+        return "尚未設定 Gemini API Key，無法啟動強制強化。"
+    model = environ.get("GEMINI_MODEL", "").strip()
+    if model and model != "gemini-3.7-flash":
+        return "強制模式僅允許使用 gemini-3.7-flash 模型。"
+    return None
+
+
+def format_force_confirmation(estimate: ForceGeminiEstimate) -> str:
+    return (
+        "即將使用 Gemini 3.7 Flash 強化未審核媒體：\n\n"
+        f"影片：{estimate.video_count}\n"
+        f"照片：{estimate.image_count}\n"
+        f"已審核：{estimate.reviewed_count}（略過）\n\n"
+        f"正常強化請求上限：{estimate.normal_request_limit}\n"
+        f"含重試的最壞上限：{estimate.retry_attempt_limit}\n\n"
+        "照片只傳送一張縮小預覽；影片每段只傳送 1～3 張縮圖，"
+        "不會上傳完整影片或本機完整路徑。要繼續嗎？"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +56,7 @@ class StatusViewModel:
     remaining_text: str
     current_text: str
     gemini_text: str
+    failure_text: str
 
     @classmethod
     def idle(cls) -> "StatusViewModel":
@@ -51,6 +81,7 @@ class StatusViewModel:
             remaining_text="0",
             current_text="尚未開始",
             gemini_text="0 / 12",
+            failure_text="失敗／降級：0",
         )
 
     @classmethod
@@ -90,6 +121,11 @@ class StatusViewModel:
             status_text = "已完成"
         else:
             status_text = "worker 未執行"
+        if (
+            run.analysis_mode is AnalysisMode.FORCE_GEMINI
+            and status_text == "執行中"
+        ):
+            status_text = "Gemini 強制強化中"
 
         total = max(0, run.total_media)
         completed = min(max(0, run.completed_media), total)
@@ -109,6 +145,7 @@ class StatusViewModel:
             remaining_text=str(max(0, total - completed)),
             current_text=current_text,
             gemini_text=f"{min(max(gemini_used, 0), 12)} / 12",
+            failure_text=f"失敗／降級：{max(0, run.failed_media)}",
         )
 
     @staticmethod
@@ -142,6 +179,7 @@ class StatusViewModel:
 class ControlState:
     select_enabled: bool
     start_enabled: bool
+    force_start_enabled: bool
     stop_enabled: bool
     open_outputs_enabled: bool
 
@@ -156,6 +194,7 @@ class ControlState:
         return cls(
             select_enabled=not busy,
             start_enabled=has_workspace and not busy,
+            force_start_enabled=has_workspace and has_outputs and not busy,
             stop_enabled=busy,
             open_outputs_enabled=has_outputs,
         )
@@ -207,8 +246,8 @@ class StatusApplication:
         self.closing = False
 
         root.title("Media Catalog A+ 狀態監控")
-        root.geometry("840x500")
-        root.minsize(760, 460)
+        root.geometry("1040x540")
+        root.minsize(920, 500)
         root.configure(bg="#0F172A")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -226,6 +265,7 @@ class StatusApplication:
         self.progress_var = tk.StringVar(value="進度：0 / 0　未完成：0")
         self.current_var = tk.StringVar(value="目前：尚未開始")
         self.gemini_var = tk.StringVar(value="Gemini 強化：0 / 12")
+        self.failure_var = tk.StringVar(value="失敗／降級：0")
 
         self._build_layout()
         self._render(initial)
@@ -274,6 +314,7 @@ class StatusApplication:
         self._label(panel, "分析進度", self.progress_var)
         self._label(panel, "目前項目", self.current_var)
         self._label(panel, "雲端強化", self.gemini_var)
+        self._label(panel, "異常統計", self.failure_var)
 
         style = ttk.Style(self.root)
         style.theme_use("clam")
@@ -302,6 +343,14 @@ class StatusApplication:
         self.select_button.pack(side="left", padx=(0, 6))
         self.start_button = self._button(buttons, "開始／繼續", self._start)
         self.start_button.pack(side="left", padx=6)
+        self.force_button = self._button(
+            buttons,
+            "強制 Gemini 強化",
+            self._start_force_gemini,
+            background="#C2410C",
+            active_background="#EA580C",
+        )
+        self.force_button.pack(side="left", padx=6)
         self.stop_button = self._button(buttons, "安全停止", self._safe_stop)
         self.stop_button.pack(side="left", padx=6)
         self.excel_button = self._button(
@@ -340,14 +389,22 @@ class StatusApplication:
             font=("Segoe UI", 11),
         ).pack(side="left", fill="x", expand=True)
 
-    def _button(self, parent, text: str, command):
+    def _button(
+        self,
+        parent,
+        text: str,
+        command,
+        *,
+        background: str = "#334155",
+        active_background: str = "#475569",
+    ):
         return self.tk.Button(
             parent,
             text=text,
             command=command,
-            bg="#334155",
+            bg=background,
             fg="#F8FAFC",
-            activebackground="#475569",
+            activebackground=active_background,
             activeforeground="#FFFFFF",
             relief="flat",
             bd=0,
@@ -368,7 +425,11 @@ class StatusApplication:
                 self.workspace.database_path.is_file()
                 and self.workspace.excel_path.is_file()
             ):
-                self.supervisor.start(self.media_root, self.skill_root)
+                self.supervisor.start(
+                    self.media_root,
+                    self.skill_root,
+                    mode=AnalysisMode.AUTO,
+                )
             else:
                 self.supervisor.start_catalog(
                     self.media_root, self.skill_root
@@ -376,6 +437,47 @@ class StatusApplication:
         except (OSError, RuntimeError, WorkspacePathError) as error:
             self.status_var.set(f"啟動失敗：{error}")
             self.light.itemconfigure(self.light_dot, fill="#EF4444")
+
+    def _start_force_gemini(self) -> None:
+        if self.workspace is None or self.media_root is None:
+            return
+        if self.supervisor.is_busy:
+            return
+        environment_error = validate_force_environment(os.environ)
+        if environment_error:
+            self.messagebox.showerror(
+                "無法啟動 Gemini 強化", environment_error
+            )
+            return
+        try:
+            records = CatalogDatabase(
+                self.workspace.database_path
+            ).list_records()
+            reviewed_paths = read_reviewed_paths(self.workspace.excel_path)
+            estimate, eligible_ids = plan_force_run(records, reviewed_paths)
+        except (OSError, RuntimeError, WorkspacePathError) as error:
+            self.messagebox.showerror("無法讀取媒體清冊", str(error))
+            return
+        if not eligible_ids:
+            self.messagebox.showinfo(
+                "沒有需要強化的媒體",
+                "目前沒有未審核的照片或影片。",
+            )
+            return
+        confirmed = self.messagebox.askokcancel(
+            "確認強制 Gemini 強化",
+            format_force_confirmation(estimate),
+        )
+        if not confirmed:
+            return
+        try:
+            self.supervisor.start(
+                self.media_root,
+                self.skill_root,
+                mode=AnalysisMode.FORCE_GEMINI,
+            )
+        except (OSError, RuntimeError, WorkspacePathError) as error:
+            self.messagebox.showerror("Gemini 強化啟動失敗", str(error))
 
     def _choose_folder(self) -> None:
         if self.supervisor.is_busy:
@@ -424,6 +526,7 @@ class StatusApplication:
             status_text = {
                 "idle": "尚未選擇資料夾",
                 "cataloging": "正在建立／更新清冊",
+                "catalog_ready": "清冊就緒，請選擇分析模式",
                 "stopped": "已安全停止",
                 "error": snapshot.error_text or "建立媒體清冊失敗",
             }.get(snapshot.status, "worker 未執行")
@@ -470,6 +573,7 @@ class StatusApplication:
         )
         self.current_var.set(f"目前：{model.current_text}")
         self.gemini_var.set(f"Gemini 強化：{model.gemini_text}")
+        self.failure_var.set(model.failure_text)
         self.progress["value"] = model.progress_percent
 
     def _safe_stop(self) -> None:
@@ -492,6 +596,11 @@ class StatusApplication:
         )
         self.start_button.configure(
             state="normal" if state.start_enabled else "disabled"
+        )
+        self.force_button.configure(
+            state=(
+                "normal" if state.force_start_enabled else "disabled"
+            )
         )
         self.stop_button.configure(
             state="normal" if state.stop_enabled else "disabled"
