@@ -1,3 +1,5 @@
+import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -140,6 +142,29 @@ def test_cli_analyze_all_streams_progress_for_slow_computers(
     assert lines[0].startswith("MEDIA_ANALYSIS_PROGRESS completed=1 total=1")
     assert "status=analyzed" in lines[0]
     assert lines[-1].startswith("MEDIA_ANALYSIS_READY")
+
+
+def test_cli_escapes_filename_unsupported_by_console_encoding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "视频.jpg").write_bytes(b"photo")
+    bootstrap_workspace(root)
+    raw = io.BytesIO()
+    cp950 = io.TextIOWrapper(raw, encoding="cp950", errors="strict")
+    monkeypatch.setattr(sys, "stdout", cp950)
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    cp950.flush()
+    output = raw.getvalue().decode("cp950")
+    cp950.detach()
+    assert exit_code == 0
+    assert r"item=\u89c6\u9891.jpg" in output
 
 
 def test_cli_analyze_all_rebuilds_stale_excel_from_completed_database(

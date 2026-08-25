@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -38,3 +39,12 @@ def test_skill_package_passes_official_validation() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_test_extra_declares_pyyaml() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert any(
+        item.lower().startswith("pyyaml")
+        for item in project["project"]["optional-dependencies"]["test"]
+    )

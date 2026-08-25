@@ -21,6 +21,15 @@ from .source_guard import (
 from .workspace import MediaWorkspace, WorkspacePathError
 
 
+def _print_console(
+    message: str, *, stream=None, flush: bool = False
+) -> None:
+    output = sys.stdout if stream is None else stream
+    encoding = getattr(output, "encoding", None) or "utf-8"
+    safe = message.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(safe, file=output, flush=flush)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="media-catalog")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -81,10 +90,10 @@ def main(
             PermissionError,
             AnalysisAlreadyRunningError,
         ) as error:
-            print(f"MEDIA_CATALOG_ERROR {error}", file=sys.stderr)
+            _print_console(f"MEDIA_CATALOG_ERROR {error}", stream=sys.stderr)
             return 2
 
-        print(
+        _print_console(
             "MEDIA_CATALOG_READY"
             f" added={result.scan.discovered}"
             f" existing={result.scan.existing}"
@@ -119,7 +128,7 @@ def main(
                 def report_progress(
                     completed: int, total: int, record
                 ) -> None:
-                    print(
+                    _print_console(
                         "MEDIA_ANALYSIS_PROGRESS"
                         f" completed={completed}"
                         f" total={total}"
@@ -137,7 +146,7 @@ def main(
                 if result.remaining == 0
                 else "MEDIA_ANALYSIS_INCOMPLETE"
             )
-            print(
+            _print_console(
                 marker + f" analyzed={result.analyzed}"
                 f" failed={result.failed}"
                 f" skipped={result.skipped}"
@@ -154,7 +163,7 @@ def main(
                 database = CatalogDatabase(workspace.database_path)
                 count = database.requeue_processing()
                 write_excel(database.list_records(), workspace.excel_path)
-            print(f"MEDIA_ANALYSIS_RESUMED count={count}")
+            _print_console(f"MEDIA_ANALYSIS_RESUMED count={count}")
             return 0
 
         if arguments.command == "retry-failed":
@@ -162,14 +171,14 @@ def main(
                 database = CatalogDatabase(workspace.database_path)
                 count = database.requeue_failed()
                 write_excel(database.list_records(), workspace.excel_path)
-            print(f"MEDIA_ANALYSIS_RETRY_QUEUED count={count}")
+            _print_console(f"MEDIA_ANALYSIS_RETRY_QUEUED count={count}")
             return 0
 
         database = CatalogDatabase(workspace.database_path)
         records = database.list_records()
         for record in records:
             verify_record_source(record, capture_source(record.path))
-        print(f"MEDIA_SOURCES_VERIFIED total={len(records)}")
+        _print_console(f"MEDIA_SOURCES_VERIFIED total={len(records)}")
         return 0
     except (
         WorkspacePathError,
@@ -179,7 +188,7 @@ def main(
         PermissionError,
         AnalysisAlreadyRunningError,
     ) as error:
-        print(f"MEDIA_ANALYSIS_ERROR {error}", file=sys.stderr)
+        _print_console(f"MEDIA_ANALYSIS_ERROR {error}", stream=sys.stderr)
         return 2
 
 
