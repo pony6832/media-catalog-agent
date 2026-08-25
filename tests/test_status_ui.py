@@ -6,7 +6,33 @@ from pathlib import Path
 import pytest
 
 from media_catalog.run_state import AnalysisRun
+from media_catalog.supervisor import SupervisorSnapshot
+import media_catalog.status_ui as status_ui
 from media_catalog.status_ui import StatusViewModel
+from media_catalog.workspace import MediaWorkspace
+
+
+class RecordingSupervisor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, Path]] = []
+        self.analysis_calls: list[tuple[Path, Path]] = []
+        self.is_busy = False
+
+    def start_catalog(self, root: Path, skill_root: Path) -> int:
+        self.calls.append((root, skill_root))
+        return 1
+
+    def start(self, root: Path, skill_root: Path) -> int:
+        self.analysis_calls.append((root, skill_root))
+        return 2
+
+
+class RecordingRoot:
+    def __init__(self) -> None:
+        self.after_calls: list[tuple[int, object]] = []
+
+    def after(self, delay: int, callback) -> None:
+        self.after_calls.append((delay, callback))
 
 
 def sample_run(
@@ -38,6 +64,132 @@ def sample_run(
         recovery_count=0,
         excel_sync_pending=excel_sync_pending,
     )
+
+
+def test_idle_view_model_has_no_selected_root_or_progress() -> None:
+    model = StatusViewModel.idle()
+
+    assert model.light_color == "red"
+    assert model.status_text == "尚未選擇資料夾"
+    assert model.root_text == "尚未選擇"
+    assert model.progress_text == "0 / 0"
+    assert model.remaining_text == "0"
+
+
+def test_cancel_selection_does_not_create_results_or_start_process(
+    tmp_path: Path,
+) -> None:
+    supervisor = RecordingSupervisor()
+
+    workspace, error = status_ui.begin_selected_root(
+        "", supervisor, tmp_path / "skill"
+    )
+
+    assert workspace is None
+    assert error == ""
+    assert supervisor.calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_valid_selection_starts_catalog_without_creating_results_in_ui(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "中文 & media"
+    root.mkdir()
+    supervisor = RecordingSupervisor()
+
+    workspace, error = status_ui.begin_selected_root(
+        str(root), supervisor, tmp_path / "skill"
+    )
+
+    assert error == ""
+    assert workspace is not None
+    assert supervisor.calls == [
+        (root.resolve(), (tmp_path / "skill").resolve())
+    ]
+    assert not (root / "媒體整理成果").exists()
+
+
+def test_invalid_selection_returns_actionable_error_without_starting(
+    tmp_path: Path,
+) -> None:
+    supervisor = RecordingSupervisor()
+
+    workspace, error = status_ui.begin_selected_root(
+        str(tmp_path / "missing"), supervisor, tmp_path / "skill"
+    )
+
+    assert workspace is None
+    assert "找不到資料夾" in error
+    assert supervisor.calls == []
+
+
+@pytest.mark.parametrize(
+    (
+        "has_workspace",
+        "has_outputs",
+        "busy",
+        "select",
+        "start",
+        "open_outputs",
+    ),
+    [
+        (False, False, False, True, False, False),
+        (True, False, True, False, False, False),
+        (True, True, True, False, False, True),
+        (True, True, False, True, True, True),
+    ],
+)
+def test_control_state_prevents_root_switch_while_busy(
+    has_workspace: bool,
+    has_outputs: bool,
+    busy: bool,
+    select: bool,
+    start: bool,
+    open_outputs: bool,
+) -> None:
+    state = status_ui.ControlState.from_context(
+        has_workspace=has_workspace,
+        has_outputs=has_outputs,
+        busy=busy,
+    )
+
+    assert state.select_enabled is select
+    assert state.start_enabled is start
+    assert state.open_outputs_enabled is open_outputs
+
+
+def test_start_retries_catalog_when_selected_workspace_has_no_outputs(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    supervisor = RecordingSupervisor()
+    app = object.__new__(status_ui.StatusApplication)
+    app.workspace = MediaWorkspace.from_root(media_root)
+    app.media_root = media_root.resolve()
+    app.skill_root = (tmp_path / "skill").resolve()
+    app.supervisor = supervisor
+    app.root = RecordingRoot()
+
+    app._start()
+
+    assert supervisor.calls == [(media_root.resolve(), app.skill_root)]
+    assert supervisor.analysis_calls == []
+
+
+def test_cataloging_snapshot_renders_before_a_database_run_exists(
+    tmp_path: Path,
+) -> None:
+    app = object.__new__(status_ui.StatusApplication)
+    app.media_root = (tmp_path / "media").resolve()
+    snapshot = SupervisorSnapshot("cataloging", True, None)
+
+    model = app._view_model(snapshot)
+
+    assert model.status_text == "正在建立／更新清冊"
+    assert model.root_text == str(app.media_root)
+    assert model.progress_text == "0 / 0"
 
 
 @pytest.mark.parametrize(
