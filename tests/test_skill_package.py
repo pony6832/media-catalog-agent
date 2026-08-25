@@ -16,6 +16,15 @@ def test_skill_package_has_required_entrypoints() -> None:
     assert (SKILL_ROOT / "scripts/run_media_analysis_ui.ps1").is_file()
 
 
+def test_skill_contains_standalone_ui_launcher() -> None:
+    launcher = SKILL_ROOT / "scripts/run_media_analysis_ui.ps1"
+
+    assert launcher.is_file()
+    text = launcher.read_text(encoding="utf-8")
+    assert ".runtime\\Scripts\\pythonw.exe" in text
+    assert "[string]$RootPath = ''" in text
+
+
 def test_skill_package_passes_official_validation() -> None:
     validator = (
         Path.home()

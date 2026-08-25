@@ -31,3 +31,16 @@ def test_repository_files_have_no_gemini_key_shape() -> None:
             matches.append(name)
 
     assert matches == []
+
+
+def test_standalone_launch_artifacts_do_not_embed_provider_configuration() -> None:
+    paths = (
+        Path("skills/media-inventory/scripts/run_media_analysis_ui.ps1"),
+        Path("scripts/create-media-catalog-shortcut.ps1"),
+    )
+
+    for path in paths:
+        content = path.read_text(encoding="utf-8")
+        assert "GEMINI_API_KEY" not in content
+        assert "GOOGLE_API_KEY" not in content
+        assert "gemini-3.7-flash" not in content

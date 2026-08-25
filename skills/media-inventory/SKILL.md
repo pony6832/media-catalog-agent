@@ -39,6 +39,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<skill-root>\scripts\run_me
 
 停在 SQLite 與 Excel 預覽清冊。不要繼續寫入媒體 metadata、Markdown、備份或搜尋索引。
 
+## 桌面獨立使用
+
+使用者不在 Codex 中操作時，可雙擊 Windows 桌面的 `Media Catalog A+ Stable`：
+
+1. 無預設路徑時，UI 顯示紅燈「尚未選擇資料夾」，不啟動 worker。
+2. 按「選擇資料夾」並指定單一根目錄；取消時不建立任何成果。
+3. 有效路徑會在背景建立或更新清冊，完成後自動開始分析。
+4. 執行中不可切換路徑；先按「安全停止」，等待 worker 退出後再選擇。
+
+桌面入口不取代 Codex 流程。當 Codex 已提供 `RootPath` 時，launcher 仍直接顯示該路徑並自動開始，不要再次要求使用者選擇。捷徑不得包含 Gemini Key、模型名稱或上次媒體路徑。
+
 ## 常見錯誤
 
 - 路徑不存在或指向磁碟根目錄：回報固定錯誤，不建立替代資料夾。

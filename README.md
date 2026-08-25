@@ -20,13 +20,27 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-media-inventory-skill.ps1
 ```
 
-安裝後，可直接在對話輸入：
+安裝器會在目前 Windows 使用者的桌面建立或更新唯一一份 `Media Catalog A+ Stable` 捷徑。捷徑只包含已安裝 Skill 的啟動位置，不包含 Gemini Key、模型名稱或媒體路徑。
+
+## 使用方式
+
+### 在 Codex 貼上路徑
+
+可直接在對話輸入：
 
 ```text
 整理並分析這個資料夾：D:\你的媒體資料夾
 ```
 
 指令會先建立或更新清冊，再自動開啟 Media Catalog A+ 狀態視窗並開始分析。綠燈代表 15 秒內有 worker 心跳；紅燈會顯示未執行、心跳逾時、正在重新啟動或等待 Excel 關閉。詳細說明見 [`docs/media-catalog-a-plus-setup.md`](docs/media-catalog-a-plus-setup.md)。
+
+### 不開 Codex，從桌面啟動
+
+1. 雙擊桌面的 `Media Catalog A+ Stable`。
+2. 在紅燈顯示「尚未選擇資料夾」時按「選擇資料夾」。
+3. 選定單一媒體根目錄；UI 會先顯示「正在建立／更新清冊」，完成後自動開始分析。
+
+取消資料夾選擇不會建立 `媒體整理成果`。分析或清冊掃描進行中不能切換根目錄；先按「安全停止」，等程序退出後才能重新選擇。桌面啟動只顯示 A+ UI，不會顯示 PowerShell 或 Python 黑色終端視窗。
 
 ## 如何判讀執行結果
 

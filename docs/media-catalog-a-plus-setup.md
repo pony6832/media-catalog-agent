@@ -1,6 +1,6 @@
 # Media Catalog A+ Stable 使用與恢復指南
 
-## 啟動方式
+## 啟動方式一：Codex 貼上路徑
 
 在 Codex 對話輸入：
 
@@ -9,6 +9,17 @@
 ```
 
 Skill 會先掃描指定的單一根目錄，將 SQLite、Excel 與工作暫存放在該根目錄下的 `媒體整理成果`，再開啟 A+ 狀態視窗並自動開始。來源照片與影片不會被移動、改名或修改 metadata。
+
+## 啟動方式二：Windows 桌面捷徑
+
+安裝完成後，雙擊目前使用者桌面的 `Media Catalog A+ Stable`。這個入口不需要開啟 Codex，也不會顯示黑色 PowerShell／Python 終端。
+
+1. 初始紅燈「尚未選擇資料夾」是等待狀態，不是錯誤。
+2. 按「選擇資料夾」，使用 Windows 原生選擇器指定單一媒體根目錄。
+3. UI 顯示「正在建立／更新清冊」並在背景執行掃描；完成後自動開始分析。
+4. 按取消不會建立成果目錄、SQLite、Excel 或分析程序。
+
+清冊建立或分析執行中，「選擇資料夾」會停用。若要切換根目錄，先按「安全停止」並等待程序退出。桌面捷徑固定命名為 `Media Catalog A+ Stable.lnk`，重複執行安裝器會原地更新，不建立多份編號副本。
 
 ## 狀態視窗
 
@@ -55,3 +66,6 @@ Skill 會先掃描指定的單一根目錄，將 SQLite、Excel 與工作暫存�
    ```
 
 4. 安裝器會重建 Skill 專屬 Python runtime、固定 MCP Video Analyzer 0.8.0，並執行 Tkinter／headless 清冊冒煙測試。
+5. 安裝器確認私有 runtime 含有 `pythonw.exe` 後，建立或更新桌面捷徑；成功輸出同時包含 `MEDIA_CATALOG_SHORTCUT_READY` 與 `MEDIA_INVENTORY_SKILL_READY`。
+
+若看到 `MEDIA_INVENTORY_SKILL_ERROR`，依訊息修正後重跑安裝器。私有 runtime 缺少 `pythonw.exe` 時不要改用系統 Python，應重新安裝。若桌面位置不存在或不可寫，安裝器會停止，不會把捷徑改放到其他目錄；已安裝 Skill 與 timestamped 舊版備份會保留供檢查。
