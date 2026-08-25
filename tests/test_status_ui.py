@@ -367,3 +367,36 @@ def test_cancelled_force_confirmation_starts_nothing(
     app._start_force_gemini()
 
     supervisor.start.assert_not_called()
+
+
+def test_force_button_blocks_when_reviewed_workbook_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, supervisor, messagebox = _force_app(tmp_path, monkeypatch)
+    app.workspace.excel_path.write_bytes(b"not-an-excel-workbook")
+
+    app._start_force_gemini()
+
+    supervisor.start.assert_not_called()
+    assert messagebox.showerror.called
+
+
+def test_catalog_ready_view_shows_inventory_counts_and_size(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    (media_root / "photo.jpg").write_bytes(b"photo")
+    (media_root / "clip.mp4").write_bytes(b"video-data")
+    workspace = bootstrap_workspace(media_root).workspace
+    app = object.__new__(status_ui.StatusApplication)
+    app.media_root = media_root.resolve()
+    app.workspace = workspace
+    snapshot = SupervisorSnapshot("catalog_ready", False, None)
+
+    model = app._view_model(snapshot)
+
+    assert model.status_text == "清冊就緒，請選擇分析模式"
+    assert model.image_count == 1
+    assert model.video_count == 1
+    assert model.total_size_text == "15 B"

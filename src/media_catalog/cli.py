@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -10,8 +11,13 @@ from .analysis_runtime import RuntimePreflightError, build_local_analyzer
 from .batch_analysis import analyze_pending
 from .bootstrap import bootstrap_workspace
 from .database import CatalogDatabase
-from .excel_catalog import read_reviewed_paths, write_excel
-from .inference import LocalAnalyzer
+from .excel_catalog import (
+    ReviewedPathsError,
+    read_reviewed_paths_strict,
+    write_excel,
+)
+from .force_gemini import validate_force_environment
+from .inference import AnalysisError, LocalAnalyzer
 from .models import Status
 from .run_lock import AnalysisAlreadyRunningError, analysis_run_lock
 from .source_guard import (
@@ -121,6 +127,14 @@ def main(
                     stream=sys.stderr,
                 )
                 return 2
+            if mode is AnalysisMode.FORCE_GEMINI:
+                environment_error = validate_force_environment(os.environ)
+                if environment_error:
+                    _print_console(
+                        f"MEDIA_ANALYSIS_ERROR {environment_error}",
+                        stream=sys.stderr,
+                    )
+                    return 2
             if (
                 mode is AnalysisMode.AUTO
                 and arguments.run_id
@@ -135,7 +149,7 @@ def main(
             with analysis_run_lock(lock_path):
                 database = CatalogDatabase(workspace.database_path)
                 reviewed_paths = (
-                    read_reviewed_paths(workspace.excel_path)
+                    read_reviewed_paths_strict(workspace.excel_path)
                     if mode is AnalysisMode.FORCE_GEMINI
                     else None
                 )
@@ -233,6 +247,8 @@ def main(
         FileNotFoundError,
         PermissionError,
         AnalysisAlreadyRunningError,
+        AnalysisError,
+        ReviewedPathsError,
     ) as error:
         _print_console(f"MEDIA_ANALYSIS_ERROR {error}", stream=sys.stderr)
         return 2

@@ -1,6 +1,7 @@
 import io
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from openpyxl import load_workbook
@@ -96,9 +97,11 @@ def test_force_cli_passes_mode_and_run_id_to_batch(
         return BatchAnalysisResult(1, 0, 0, 0)
 
     monkeypatch.setattr(cli_module, "analyze_pending", fake_batch)
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
     monkeypatch.setattr(
         cli_module,
-        "read_reviewed_paths",
+        "read_reviewed_paths_strict",
         lambda _path: {"C:\\reviewed.jpg"},
     )
 
@@ -120,6 +123,36 @@ def test_force_cli_passes_mode_and_run_id_to_batch(
     assert captured["mode"] is AnalysisMode.FORCE_GEMINI
     assert captured["run_id"] == "force-root-1"
     assert captured["reviewed_paths"] == {"C:\\reviewed.jpg"}
+
+
+def test_force_cli_rejects_missing_key_before_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+    batch = Mock()
+    monkeypatch.setattr(cli_module, "analyze_pending", batch)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+    exit_code = main(
+        [
+            "analyze-all",
+            str(root),
+            "--skill-root",
+            str(tmp_path),
+            "--mode",
+            "force-gemini",
+            "--run-id",
+            "force-root-1",
+        ],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    assert exit_code == 2
+    assert "API Key" in capsys.readouterr().err
+    batch.assert_not_called()
 
 
 def test_cli_analyze_all_recovers_interrupted_and_failed_rows(

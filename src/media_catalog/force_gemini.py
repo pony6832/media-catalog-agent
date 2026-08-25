@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,15 @@ from .inference import Analysis, ImagePreparer, LocalAnalyzer
 from .models import MediaRecord
 from .run_state import VideoSegment
 from .stage_runner import StagePolicy, StageRunner
+
+
+def validate_force_environment(environ: Mapping[str, str]) -> str | None:
+    if not environ.get("GEMINI_API_KEY", "").strip():
+        return "尚未設定 Gemini API Key，無法啟動強制強化。"
+    model = environ.get("GEMINI_MODEL", "").strip()
+    if model and model != "gemini-3.7-flash":
+        return "強制模式僅允許使用 gemini-3.7-flash 模型。"
+    return None
 
 
 @dataclass(frozen=True, slots=True)

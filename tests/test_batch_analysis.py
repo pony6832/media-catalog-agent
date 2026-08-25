@@ -306,3 +306,36 @@ def test_force_batch_saves_local_result_with_nonfatal_gemini_warning(
     assert record.description == LOCAL.description
     assert record.error == "Gemini 強化失敗:GeminiError"
     assert result.failed == 1
+
+
+def test_force_batch_can_complete_while_reviewed_legacy_row_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(
+        tmp_path, ("reviewed.jpg", "eligible.jpg")
+    )
+    database = CatalogDatabase(workspace.database_path)
+    records = {item.path.name: item for item in database.list_records()}
+    store = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+    run, _ = store.begin_run(
+        root_path=workspace.root,
+        video_count=0,
+        image_count=2,
+        total_bytes=10,
+        mode=AnalysisMode.FORCE_GEMINI,
+    )
+
+    result = analyze_pending(
+        workspace,
+        ForceRuntime(
+            store, RecordingForceImages(ForceImageResult(LOCAL, None, True))
+        ),
+        mode=AnalysisMode.FORCE_GEMINI,
+        run_id=run.run_id,
+        reviewed_paths={str(records["reviewed.jpg"].path.resolve())},
+    )
+
+    assert result.remaining == 0
+    assert store.get_run(run.run_id).status == "completed"

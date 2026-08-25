@@ -6,28 +6,19 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Callable, Sequence
 
 from .analysis_mode import AnalysisMode
 from .database import CatalogDatabase
-from .excel_catalog import read_reviewed_paths
+from .excel_catalog import ReviewedPathsError, read_reviewed_paths_strict
 from .force_gemini import (
     ForceGeminiEstimate,
     plan_force_run,
+    validate_force_environment,
 )
 from .run_state import AnalysisRun
 from .supervisor import SupervisorSnapshot, WorkerSupervisor
 from .workspace import MediaWorkspace, WorkspacePathError
-
-
-def validate_force_environment(environ: Mapping[str, str]) -> str | None:
-    if not environ.get("GEMINI_API_KEY", "").strip():
-        return "尚未設定 Gemini API Key，無法啟動強制強化。"
-    model = environ.get("GEMINI_MODEL", "").strip()
-    if model and model != "gemini-3.7-flash":
-        return "強制模式僅允許使用 gemini-3.7-flash 模型。"
-    return None
 
 
 def format_force_confirmation(estimate: ForceGeminiEstimate) -> str:
@@ -67,15 +58,21 @@ class StatusViewModel:
 
     @classmethod
     def without_run(
-        cls, *, status_text: str, root_text: str
+        cls,
+        *,
+        status_text: str,
+        root_text: str,
+        video_count: int = 0,
+        image_count: int = 0,
+        total_bytes: int = 0,
     ) -> "StatusViewModel":
         return cls(
             light_color="red",
             status_text=status_text,
             root_text=root_text,
-            video_count=0,
-            image_count=0,
-            total_size_text="0 B",
+            video_count=video_count,
+            image_count=image_count,
+            total_size_text=cls._format_bytes(total_bytes),
             progress_text="0 / 0",
             progress_percent=0,
             remaining_text="0",
@@ -450,12 +447,21 @@ class StatusApplication:
             )
             return
         try:
+            if not self.workspace.database_path.is_file():
+                raise FileNotFoundError("找不到 SQLite 媒體清冊")
             records = CatalogDatabase(
                 self.workspace.database_path
             ).list_records()
-            reviewed_paths = read_reviewed_paths(self.workspace.excel_path)
+            reviewed_paths = read_reviewed_paths_strict(
+                self.workspace.excel_path
+            )
             estimate, eligible_ids = plan_force_run(records, reviewed_paths)
-        except (OSError, RuntimeError, WorkspacePathError) as error:
+        except (
+            OSError,
+            RuntimeError,
+            ReviewedPathsError,
+            WorkspacePathError,
+        ) as error:
             self.messagebox.showerror("無法讀取媒體清冊", str(error))
             return
         if not eligible_ids:
@@ -530,9 +536,31 @@ class StatusApplication:
                 "stopped": "已安全停止",
                 "error": snapshot.error_text or "建立媒體清冊失敗",
             }.get(snapshot.status, "worker 未執行")
+            records = []
+            if (
+                snapshot.status == "catalog_ready"
+                and self.workspace is not None
+                and self.workspace.database_path.is_file()
+            ):
+                records = CatalogDatabase(
+                    self.workspace.database_path
+                ).list_records()
             return StatusViewModel.without_run(
                 status_text=status_text,
                 root_text=root_text,
+                video_count=sum(
+                    record.media_type.startswith("video/")
+                    for record in records
+                ),
+                image_count=sum(
+                    record.media_type.startswith("image/")
+                    for record in records
+                ),
+                total_bytes=sum(
+                    record.path.stat().st_size
+                    for record in records
+                    if record.path.is_file()
+                ),
             )
         media_name = ""
         segment_number = 0

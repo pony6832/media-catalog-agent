@@ -135,16 +135,33 @@ def analyze_pending(
     total = len(pending)
 
     def failed_count(records: Iterable[MediaRecord]) -> int:
-        fatal = sum(record.status is Status.FAILED for record in records)
+        scoped = tuple(
+            record
+            for record in records
+            if force_eligible_ids is None
+            or record.id in force_eligible_ids
+        )
+        fatal = sum(record.status is Status.FAILED for record in scoped)
         if mode is not AnalysisMode.FORCE_GEMINI:
             return fatal
         warnings = sum(
             record.status is Status.ANALYZED
             and bool(record.error)
             and record.error.startswith("Gemini 強化失敗")
-            for record in records
+            for record in scoped
         )
         return fatal + warnings
+
+    def completed_count(records: Iterable[MediaRecord]) -> int:
+        return sum(
+            has_complete_analysis(record)
+            or (
+                force_eligible_ids is not None
+                and record.id not in force_eligible_ids
+            )
+            for record in records
+            if record.media_type.startswith(("image/", "video/"))
+        )
 
     def sync_excel() -> None:
         nonlocal excel_sync_pending
@@ -164,11 +181,11 @@ def analyze_pending(
         if run_state is None or active_run_id is None:
             return
         records = database.list_records()
-        completed_count = sum(has_complete_analysis(record) for record in records)
+        durable_completed = completed_count(records)
         current_failed_count = failed_count(records)
         run_state.update_counts(
             active_run_id,
-            completed_media=completed_count,
+            completed_media=durable_completed,
             failed_media=current_failed_count,
             current_media_id=current_media_id,
             current_segment_id=None,
@@ -259,14 +276,13 @@ def analyze_pending(
     remaining = sum(
         not has_complete_analysis(record)
         for record in database.list_records()
+        if force_eligible_ids is None or record.id in force_eligible_ids
     )
     if run_state is not None and active_run_id is not None:
         final_records = database.list_records()
         run_state.update_counts(
             active_run_id,
-            completed_media=sum(
-                has_complete_analysis(record) for record in final_records
-            ),
+            completed_media=completed_count(final_records),
             failed_media=failed,
             current_media_id=None,
             current_segment_id=None,

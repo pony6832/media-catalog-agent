@@ -51,6 +51,10 @@ _MEDIA_LABELS = {
 }
 
 
+class ReviewedPathsError(RuntimeError):
+    pass
+
+
 def read_reviewed_paths(excel_path: Path) -> set[str]:
     source = Path(excel_path)
     if not source.is_file():
@@ -80,6 +84,37 @@ def read_reviewed_paths(excel_path: Path) -> set[str]:
                 for row in range(2, sheet.max_row + 1)
             )
             if status_value == "已審核" and path_value
+        }
+    finally:
+        workbook.close()
+
+
+def read_reviewed_paths_strict(excel_path: Path) -> set[str]:
+    source = Path(excel_path)
+    if not source.is_file():
+        raise ReviewedPathsError("找不到 Excel 媒體清冊")
+    try:
+        workbook = load_workbook(source, read_only=True, data_only=True)
+    except (OSError, BadZipFile, InvalidFileException) as error:
+        raise ReviewedPathsError("Excel 媒體清冊無法讀取") from error
+    try:
+        if "媒體清冊" not in workbook.sheetnames:
+            raise ReviewedPathsError("Excel 缺少媒體清冊工作表")
+        sheet = workbook["媒體清冊"]
+        headers = {
+            cell.value: index
+            for index, cell in enumerate(sheet[1], start=1)
+            if isinstance(cell.value, str)
+        }
+        status_column = headers.get("狀態")
+        path_column = headers.get("完整路徑")
+        if status_column is None or path_column is None:
+            raise ReviewedPathsError("Excel 缺少狀態或完整路徑欄位")
+        return {
+            str(sheet.cell(row, path_column).value)
+            for row in range(2, sheet.max_row + 1)
+            if sheet.cell(row, status_column).value == "已審核"
+            and sheet.cell(row, path_column).value
         }
     finally:
         workbook.close()

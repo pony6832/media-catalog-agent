@@ -280,7 +280,15 @@ class SegmentPipeline:
     ) -> int:
         failures = 0
         for segment in select_force_segments(segments, limit=12):
+            run = self.store.get_run(segment.run_id)
+            if run is not None and run.stop_requested:
+                raise SafeStopRequested("safe stop requested")
             if segment.cloud_result_json is not None:
+                continue
+            if segment.error and segment.error.startswith(
+                ("cloud_failed:", "cloud_quota_exhausted")
+            ):
+                failures += 1
                 continue
             local_analysis = self._best_analysis(segment)
             selected = segment.selected_frames

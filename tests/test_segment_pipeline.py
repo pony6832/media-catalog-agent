@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from media_catalog.gemini_client import GeminiError, GeminiSegmentRequest
 from media_catalog.analysis_mode import AnalysisMode
@@ -11,7 +12,7 @@ from media_catalog.inference import Analysis, AnalysisError
 from media_catalog.models import MediaRecord, Status
 from media_catalog.run_state import RunStateStore, VideoSegment
 from media_catalog.scene_segments import SegmentRange
-from media_catalog.segment_pipeline import SegmentPipeline
+from media_catalog.segment_pipeline import SafeStopRequested, SegmentPipeline
 
 
 GOOD = Analysis(
@@ -346,3 +347,41 @@ def test_force_mode_cloud_failures_keep_local_video_and_warn(
     assert result.gemini_segments == 0
     assert result.warning == "Gemini 強化失敗:2 段"
     assert gemini.calls == 4
+
+    resumed = pipeline.analyze_video(
+        _video_record(tmp_path), "run-1", mode=AnalysisMode.FORCE_GEMINI
+    )
+
+    assert resumed.warning == "Gemini 強化失敗:2 段"
+    assert gemini.calls == 4
+
+
+def test_force_mode_checks_safe_stop_between_cloud_segments(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+
+    class StopAfterFirstGemini(RecordingGemini):
+        def analyze(self, request: GeminiSegmentRequest) -> Analysis:
+            result = super().analyze(request)
+            store.request_stop("run-1")
+            return result
+
+    gemini = StopAfterFirstGemini()
+    pipeline = SegmentPipeline(
+        segmenter=FakeSegmenter(3),
+        selector=ThreeFrameSelector(),
+        local_analyzer=RecordingLocalAnalyzer(GOOD),
+        gemini_client=gemini,
+        store=store,
+        output_root=tmp_path / "segments",
+    )
+
+    with pytest.raises(SafeStopRequested):
+        pipeline.analyze_video(
+            _video_record(tmp_path),
+            "run-1",
+            mode=AnalysisMode.FORCE_GEMINI,
+        )
+
+    assert len(gemini.requests) == 1
