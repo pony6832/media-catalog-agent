@@ -6,9 +6,10 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 from urllib.parse import urlparse
 
 
@@ -26,6 +27,75 @@ class Analysis:
     description: str
     highlights: tuple[str, ...]
     keywords: tuple[str, ...]
+
+
+_GENERIC_KEYWORDS = {"內容", "畫面", "場景", "影像", "人物"}
+_CONFLICTING_VISUALS = (
+    ("白天", "夜晚"),
+    ("室內", "室外"),
+    ("單人", "多人"),
+)
+
+
+def assess_analysis_quality(
+    analysis: Analysis,
+    *,
+    ocr_text: str,
+    frame_count: int,
+    frame_summaries: Sequence[str] = (),
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    description = "".join(analysis.description.split())
+    if len(description) < 12:
+        issues.append("generic_description")
+
+    normalized_highlights = [
+        "".join(item.split()).casefold() for item in analysis.highlights
+    ]
+    if len(set(normalized_highlights)) < len(normalized_highlights):
+        issues.append("duplicate_highlights")
+
+    normalized_keywords = {
+        "".join(item.split()).casefold() for item in analysis.keywords
+    }
+    if normalized_keywords and normalized_keywords <= {
+        item.casefold() for item in _GENERIC_KEYWORDS
+    }:
+        issues.append("generic_keywords")
+
+    compact_ocr = "".join(ocr_text.split())
+    if len(compact_ocr) >= 80:
+        main_tokens = _main_ocr_tokens(ocr_text)
+        normalized_description = description.casefold()
+        if main_tokens and not any(
+            token in normalized_description for token in main_tokens
+        ):
+            issues.append("ocr_not_reflected")
+
+    if frame_count >= 3 and len(frame_summaries) >= 2:
+        combined = " ".join(frame_summaries).casefold()
+        if any(
+            left.casefold() in combined and right.casefold() in combined
+            for left, right in _CONFLICTING_VISUALS
+        ):
+            issues.append("conflicting_frames")
+    return tuple(issues)
+
+
+def _main_ocr_tokens(ocr_text: str) -> tuple[str, ...]:
+    counts: Counter[str] = Counter()
+    chunks = re.findall(
+        r"[A-Za-z0-9]+|[\u3400-\u9fff]+", ocr_text.casefold()
+    )
+    for chunk in chunks:
+        if re.fullmatch(r"[\u3400-\u9fff]+", chunk):
+            if len(chunk) == 1:
+                counts[chunk] += 1
+            else:
+                counts.update(chunk[index : index + 2] for index in range(len(chunk) - 1))
+        elif len(chunk) >= 2:
+            counts[chunk] += 1
+    return tuple(token for token, _count in counts.most_common(3))
 
 
 @dataclass(frozen=True, slots=True)
