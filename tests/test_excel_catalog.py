@@ -5,7 +5,11 @@ import pytest
 from openpyxl import load_workbook
 
 from media_catalog.database import CatalogDatabase
-from media_catalog.excel_catalog import CATALOG_HEADERS, write_excel
+from media_catalog.excel_catalog import (
+    CATALOG_HEADERS,
+    read_reviewed_paths,
+    write_excel,
+)
 
 
 def test_write_excel_uses_spec_columns_and_persisted_values(tmp_path: Path) -> None:
@@ -100,3 +104,62 @@ def test_write_excel_preserves_existing_workbook_when_atomic_replace_fails(
 
     assert output.read_bytes() == b"existing-workbook"
     assert list(tmp_path.glob(".媒體清冊.*.tmp.xlsx")) == []
+
+
+def test_path_cell_links_to_existing_source(tmp_path: Path) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    source = tmp_path / "片段 01.mp4"
+    source.write_bytes(b"video")
+    record = database.upsert_discovered(source, "video-1", "video/mp4")
+
+    output = write_excel([record], tmp_path / "媒體清冊.xlsx")
+
+    workbook = load_workbook(output)
+    path_cell = workbook["媒體清冊"].cell(2, 3)
+    assert path_cell.value == str(source.resolve())
+    assert path_cell.hyperlink is not None
+    assert path_cell.hyperlink.target == source.resolve().as_uri()
+    assert path_cell.style == "Hyperlink"
+    workbook.close()
+
+
+def test_path_cell_stays_plain_when_source_is_missing(tmp_path: Path) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    source = tmp_path / "missing.mp4"
+    record = database.upsert_discovered(source, "missing", "video/mp4")
+
+    output = write_excel([record], tmp_path / "媒體清冊.xlsx")
+
+    workbook = load_workbook(output)
+    path_cell = workbook["媒體清冊"].cell(2, 3)
+    assert path_cell.value == str(source.resolve())
+    assert path_cell.hyperlink is None
+    assert path_cell.style != "Hyperlink"
+    workbook.close()
+
+
+def test_atomic_rebuild_preserves_reviewed_status_by_path(
+    tmp_path: Path,
+) -> None:
+    database = CatalogDatabase(tmp_path / "catalog.sqlite")
+    source = tmp_path / "reviewed.png"
+    source.write_bytes(b"photo")
+    record = database.upsert_discovered(source, "reviewed", "image/png")
+    analyzed = database.save_analysis(
+        record.id,
+        description="已完成描述",
+        highlights=("清晰",),
+        keywords=("照片",),
+    )
+    output = write_excel([analyzed], tmp_path / "媒體清冊.xlsx")
+    workbook = load_workbook(output)
+    workbook["媒體清冊"].cell(2, 1).value = "已審核"
+    workbook.save(output)
+    workbook.close()
+
+    write_excel([analyzed], output)
+
+    workbook = load_workbook(output)
+    assert workbook["媒體清冊"].cell(2, 1).value == "已審核"
+    workbook.close()
+    assert read_reviewed_paths(output) == {str(source.resolve())}

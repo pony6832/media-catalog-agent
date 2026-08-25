@@ -4,8 +4,10 @@ import os
 from pathlib import Path
 from typing import Iterable
 import uuid
+from zipfile import BadZipFile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -49,10 +51,45 @@ _MEDIA_LABELS = {
 }
 
 
+def read_reviewed_paths(excel_path: Path) -> set[str]:
+    source = Path(excel_path)
+    if not source.is_file():
+        return set()
+    try:
+        workbook = load_workbook(source, read_only=True, data_only=True)
+    except (BadZipFile, InvalidFileException):
+        return set()
+    try:
+        sheet = workbook["媒體清冊"]
+        headers = {
+            cell.value: index
+            for index, cell in enumerate(sheet[1], start=1)
+            if isinstance(cell.value, str)
+        }
+        status_column = headers.get("狀態")
+        path_column = headers.get("完整路徑")
+        if status_column is None or path_column is None:
+            return set()
+        return {
+            str(path_value)
+            for status_value, path_value in (
+                (
+                    sheet.cell(row, status_column).value,
+                    sheet.cell(row, path_column).value,
+                )
+                for row in range(2, sheet.max_row + 1)
+            )
+            if status_value == "已審核" and path_value
+        }
+    finally:
+        workbook.close()
+
+
 def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
     destination = Path(output_path).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     catalog_records = list(records)
+    reviewed_paths = read_reviewed_paths(destination)
 
     workbook = Workbook()
     sheet = workbook.active
@@ -60,11 +97,17 @@ def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
     sheet.append(CATALOG_HEADERS)
 
     for record in catalog_records:
+        source_path = record.path.resolve()
+        path_text = str(source_path)
         sheet.append(
             (
-                _STATUS_LABELS[record.status],
+                (
+                    "已審核"
+                    if path_text in reviewed_paths
+                    else _STATUS_LABELS[record.status]
+                ),
                 record.path.name,
-                str(record.path),
+                path_text,
                 _MEDIA_LABELS.get(record.media_type, record.media_type),
                 record.description,
                 "；".join(record.highlights),
@@ -80,6 +123,10 @@ def write_excel(records: Iterable[MediaRecord], output_path: Path) -> Path:
                 record.error,
             )
         )
+        path_cell = sheet.cell(sheet.max_row, 3)
+        if source_path.is_file():
+            path_cell.hyperlink = source_path.as_uri()
+            path_cell.style = "Hyperlink"
 
     if catalog_records:
         review_validation = DataValidation(
