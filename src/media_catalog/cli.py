@@ -140,10 +140,9 @@ def main(
                 result = analyze_pending(
                     workspace, analyzer, progress=report_progress
                 )
-                write_excel(database.list_records(), workspace.excel_path)
             marker = (
                 "MEDIA_ANALYSIS_READY"
-                if result.remaining == 0
+                if result.remaining == 0 and not result.excel_sync_pending
                 else "MEDIA_ANALYSIS_INCOMPLETE"
             )
             _print_console(
@@ -151,12 +150,17 @@ def main(
                 f" failed={result.failed}"
                 f" skipped={result.skipped}"
                 f" remaining={result.remaining}"
+                f" excel_sync_pending={str(result.excel_sync_pending).lower()}"
                 f" recovered_incomplete={recovered_incomplete}"
                 f" recovered_processing={recovered_processing}"
                 f" retried_failed={retried_failed}"
                 f" catalog={workspace.excel_path}"
             )
-            return 0 if result.remaining == 0 else 3
+            return (
+                0
+                if result.remaining == 0 and not result.excel_sync_pending
+                else 3
+            )
 
         if arguments.command == "resume-processing":
             with analysis_run_lock(workspace.result_root / ".analysis.lock"):

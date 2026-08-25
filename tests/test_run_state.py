@@ -92,3 +92,26 @@ def test_gemini_slot_is_atomic_across_parallel_connections(tmp_path: Path) -> No
         granted = list(executor.map(consume, range(24)))
 
     assert sum(granted) == 12
+
+
+def test_run_state_tracks_and_clears_current_segment(tmp_path: Path) -> None:
+    store = RunStateStore(tmp_path / "catalog.sqlite")
+    store.create_run(
+        "run-1",
+        root_path=tmp_path,
+        video_count=1,
+        image_count=0,
+        total_bytes=100,
+    )
+
+    store.set_current_item("run-1", "video-1", "video-1:3")
+    current = store.get_run("run-1")
+    assert current is not None
+    assert current.current_media_id == "video-1"
+    assert current.current_segment_id == "video-1:3"
+
+    store.set_current_item("run-1", None, None)
+    cleared = store.get_run("run-1")
+    assert cleared is not None
+    assert cleared.current_media_id is None
+    assert cleared.current_segment_id is None

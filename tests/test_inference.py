@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from media_catalog.inference import (
+    Analysis,
     AnalysisError,
     FallbackVideoExtractor,
     FfmpegImagePreparer,
@@ -339,3 +340,68 @@ def test_local_analyzer_prepares_only_three_representative_video_frames(
 
     assert prepared == [frames[0], frames[3], frames[6]]
     assert all(str(frame) in ollama_arguments for frame in prepared)
+
+
+def test_local_analyzer_analyzes_selected_frames_in_one_request(
+    tmp_path: Path,
+) -> None:
+    frames = tuple(tmp_path / f"selected-{index}.jpg" for index in range(3))
+    for frame in frames:
+        frame.write_bytes(b"frame")
+    calls: list[list[str]] = []
+
+    def runner(arguments: list[str], **_: object):
+        calls.append(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=json.dumps(
+                {
+                    "description": "三張片段畫面顯示講者與簡報。",
+                    "highlights": ["講者簡報"],
+                    "keywords": ["講者", "簡報"],
+                }
+            ),
+            stderr="",
+        )
+
+    result = LocalAnalyzer(model="qwen3-vl:8b", runner=runner).analyze_frames(
+        frames, ocr_text="會議標題"
+    )
+
+    assert result.keywords == ("講者", "簡報")
+    assert len(calls) == 1
+    assert all(str(frame) in calls[0] for frame in frames)
+    assert "會議標題" in calls[0][-1]
+
+
+def test_local_analyzer_summarizes_segment_text_without_images() -> None:
+    calls: list[list[str]] = []
+
+    def runner(arguments: list[str], **_: object):
+        calls.append(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=json.dumps(
+                {
+                    "description": "影片依序呈現會議開場與成果報告。",
+                    "highlights": ["會議開場", "成果報告"],
+                    "keywords": ["會議", "成果"],
+                }
+            ),
+            stderr="",
+        )
+
+    analyzer = LocalAnalyzer(model="qwen3-vl:8b", runner=runner)
+    result = analyzer.summarize_segments(
+        (
+            Analysis("會議開場。", ("主持人",), ("會議",)),
+            Analysis("成果報告。", ("圖表",), ("成果",)),
+        )
+    )
+
+    assert result.description == "影片依序呈現會議開場與成果報告。"
+    assert len(calls) == 1
+    assert "會議開場" in calls[0][-1]
+    assert "成果報告" in calls[0][-1]

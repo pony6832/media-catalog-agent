@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
+import media_catalog.cli as cli_module
 from media_catalog.bootstrap import bootstrap_workspace
 from media_catalog.cli import main
 from media_catalog.database import CatalogDatabase
@@ -200,6 +201,24 @@ def test_cli_analyze_all_rebuilds_stale_excel_from_completed_database(
     workbook.close()
     assert row[0] == "待確認"
     assert row[4:7] == ["資料庫完整描述", "完整重點", "完整關鍵字"]
+
+
+def test_cli_does_not_repeat_excel_write_after_batch_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _catalog_root_with_one_pending_photo(tmp_path)
+
+    def duplicate_write(*_args, **_kwargs):
+        raise PermissionError("duplicate final Excel write")
+
+    monkeypatch.setattr(cli_module, "write_excel", duplicate_write)
+
+    exit_code = main(
+        ["analyze-all", str(root), "--skill-root", str(tmp_path)],
+        runtime_builder=lambda **_kwargs: SuccessfulAnalyzer(),
+    )
+
+    assert exit_code == 0
 
 
 @pytest.mark.parametrize("command", ["start", "resume-processing", "retry-failed"])

@@ -439,17 +439,59 @@ class LocalAnalyzer:
     def analyze(self, source: Path) -> Analysis:
         media_path = _local_media_path(source)
         visual_paths = [media_path]
-        ocr_text: tuple[str, ...] = ()
+        ocr_text = ""
         if media_path.suffix.casefold() in VIDEO_EXTENSIONS:
             if self.video_extractor is None:
                 raise AnalysisError("A local video extractor is required for video")
             evidence = self.video_extractor.extract(media_path)
             visual_paths = _representative_paths(list(evidence.frames))
-            ocr_text = evidence.ocr_text
+            ocr_text = "；".join(evidence.ocr_text)
+
+        return self._analyze_visuals(visual_paths, ocr_text=ocr_text)
+
+    def analyze_frames(
+        self,
+        frames: Sequence[Path],
+        *,
+        ocr_text: str = "",
+    ) -> Analysis:
+        if not 1 <= len(frames) <= 3:
+            raise AnalysisError("Local segment analysis requires one to three frames")
+        visual_paths = [_local_media_path(path) for path in frames]
+        return self._analyze_visuals(visual_paths, ocr_text=ocr_text)
+
+    def summarize_segments(
+        self, analyses: Sequence[Analysis]
+    ) -> Analysis:
+        if not analyses:
+            raise AnalysisError("At least one segment analysis is required")
+        segment_payload = json.dumps(
+            [
+                {
+                    "segment": index + 1,
+                    "description": analysis.description,
+                    "highlights": analysis.highlights,
+                    "keywords": analysis.keywords,
+                }
+                for index, analysis in enumerate(analyses)
+            ],
+            ensure_ascii=False,
+        )
+        prompt = (
+            "請只根據以下片段文字分析，彙整整支影片。只輸出單一 JSON 物件，"
+            "欄位固定為 description、highlights、keywords，使用繁體中文且不得"
+            f"空白。不得加入片段中沒有的內容。片段資料：{segment_payload}"
+        )
+        return self._invoke((), prompt)
+
+    def _analyze_visuals(
+        self, visual_paths: Sequence[Path], *, ocr_text: str
+    ) -> Analysis:
+        prepared_paths = list(visual_paths)
 
         if self.image_preparer is not None:
-            visual_paths = [
-                self.image_preparer.prepare(path) for path in visual_paths
+            prepared_paths = [
+                self.image_preparer.prepare(path) for path in prepared_paths
             ]
 
         prompt = (
@@ -459,7 +501,12 @@ class LocalAnalyzer:
             "關鍵字。不要加入 Markdown 或額外欄位。"
         )
         if ocr_text:
-            prompt += " 已擷取 OCR 文字：" + "；".join(ocr_text)
+            prompt += " 已擷取 OCR 文字：" + ocr_text
+        return self._invoke(prepared_paths, prompt)
+
+    def _invoke(
+        self, visual_paths: Sequence[Path], prompt: str
+    ) -> Analysis:
         arguments = [
             self.ollama_executable,
             "run",

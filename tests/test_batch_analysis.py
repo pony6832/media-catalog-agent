@@ -8,7 +8,9 @@ from media_catalog.batch_analysis import BatchAnalysisResult, analyze_pending
 from media_catalog.database import CatalogDatabase
 from media_catalog.inference import Analysis, AnalysisError
 from media_catalog.models import Status
+from media_catalog.run_state import RunStateStore
 from media_catalog.scanner import scan
+from media_catalog.segment_pipeline import SafeStopRequested, VideoAnalysisResult
 from media_catalog.source_guard import capture_source
 from media_catalog.workspace import MediaWorkspace
 
@@ -129,3 +131,70 @@ def test_excel_failure_stops_before_analyzing_the_next_item(
     ]
     assert statuses == [Status.PROCESSING, Status.PENDING]
     assert analyzer.sources == []
+
+
+def test_a_plus_runtime_continues_sqlite_analysis_when_excel_is_locked(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(tmp_path, ("clip.mp4", "photo.jpg"))
+    store = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+
+    class FakeVideoPipeline:
+        def analyze_video(self, record, run_id):
+            return VideoAnalysisResult(
+                description="影片片段分析完成。",
+                highlights=("片段",),
+                keywords=("影片",),
+                gemini_segments=0,
+                needs_review_segments=0,
+                failed_segments=0,
+            )
+
+    class APlusRuntime(PathAwareAnalyzer):
+        run_state = store
+        segment_pipeline = FakeVideoPipeline()
+
+    def locked_excel(*_args, **_kwargs):
+        raise PermissionError("workbook is locked")
+
+    result = analyze_pending(
+        workspace, APlusRuntime(), excel_writer=locked_excel
+    )
+
+    records = CatalogDatabase(workspace.database_path).list_records()
+    assert all(record.status is Status.ANALYZED for record in records)
+    assert result.analyzed == 2
+    assert result.remaining == 0
+    assert result.excel_sync_pending is True
+    run = store.get_run(store.run_id_for_root(workspace.root))
+    assert run is not None and run.excel_sync_pending is True
+    assert run.status == "incomplete"
+
+
+def test_safe_stop_returns_current_video_to_pending_without_failure(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace_with_media(tmp_path, ("clip.mp4",))
+    store = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+
+    class StoppingPipeline:
+        def analyze_video(self, _record, run_id):
+            store.request_stop(run_id)
+            raise SafeStopRequested("safe stop requested")
+
+    class StoppingRuntime(PathAwareAnalyzer):
+        run_state = store
+        segment_pipeline = StoppingPipeline()
+
+    result = analyze_pending(workspace, StoppingRuntime())
+
+    record = CatalogDatabase(workspace.database_path).list_records()[0]
+    assert record.status is Status.PENDING
+    assert result.failed == 0
+    assert result.remaining == 1
+    run = store.get_run(store.run_id_for_root(workspace.root))
+    assert run is not None and run.status == "incomplete"

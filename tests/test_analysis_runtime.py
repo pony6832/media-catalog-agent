@@ -9,6 +9,7 @@ from media_catalog.analysis_runtime import (
     build_local_analyzer,
 )
 from media_catalog.inference import FallbackVideoExtractor, McpVideoExtractor
+from media_catalog.segment_pipeline import SegmentPipeline
 from media_catalog.workspace import MediaWorkspace
 
 
@@ -111,6 +112,8 @@ def test_build_runtime_resolves_watch_and_pinned_private_mcp(
     assert calls[0] == ["ollama.exe", "list"]
     assert calls[1] == ["ffmpeg.exe", "-version"]
     assert calls[2][-1] == "--check"
+    assert isinstance(analyzer.segment_pipeline, SegmentPipeline)
+    assert analyzer.run_state.path == workspace.database_path
 
 
 def test_build_runtime_omits_watch_when_its_preflight_fails(

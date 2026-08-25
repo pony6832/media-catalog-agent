@@ -80,6 +80,10 @@ class GeminiClient:
         self.transport = transport or UrllibGeminiTransport()
         self.timeout_seconds = timeout_seconds
 
+    @property
+    def is_configured(self) -> bool:
+        return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
     def analyze(self, request: GeminiSegmentRequest) -> Analysis:
         key = os.getenv("GEMINI_API_KEY", "").strip()
         if not key:
@@ -148,7 +152,10 @@ class GeminiClient:
                     }
                 }
             )
-        return {"contents": [{"role": "user", "parts": parts}]}
+        return {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        }
 
     @staticmethod
     def _response_text(payload: dict[str, object]) -> str:

@@ -135,6 +135,18 @@ def test_missing_api_key_fails_before_transport(
         )
 
 
+def test_client_reports_whether_private_environment_key_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    client = GeminiClient(transport=FailingTransport("must not run"))
+
+    assert client.is_configured is False
+
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-secret")
+    assert client.is_configured is True
+
+
 def test_malformed_provider_response_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

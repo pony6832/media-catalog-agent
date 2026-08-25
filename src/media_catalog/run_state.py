@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -98,6 +99,50 @@ class RunStateStore:
         assert result is not None
         return result
 
+    @staticmethod
+    def run_id_for_root(root_path: Path) -> str:
+        normalized = str(Path(root_path).resolve()).casefold().encode("utf-8")
+        return f"catalog-{hashlib.sha256(normalized).hexdigest()[:20]}"
+
+    def ensure_run(
+        self,
+        *,
+        root_path: Path,
+        video_count: int,
+        image_count: int,
+        total_bytes: int,
+    ) -> AnalysisRun:
+        run_id = self.run_id_for_root(root_path)
+        existing = self.get_run(run_id)
+        if existing is not None:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE analysis_runs
+                    SET video_count = ?, image_count = ?, total_bytes = ?,
+                        total_media = ?, updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        video_count,
+                        image_count,
+                        total_bytes,
+                        video_count + image_count,
+                        _now(),
+                        run_id,
+                    ),
+                )
+            refreshed = self.get_run(run_id)
+            assert refreshed is not None
+            return refreshed
+        return self.create_run(
+            run_id,
+            root_path=root_path,
+            video_count=video_count,
+            image_count=image_count,
+            total_bytes=total_bytes,
+        )
+
     def get_run(self, run_id: str) -> AnalysisRun | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -148,6 +193,23 @@ class RunStateStore:
                 WHERE run_id = ?
                 """,
                 (pid, timestamp, timestamp, run_id),
+            )
+        self._require_updated(cursor.rowcount, run_id)
+
+    def set_current_item(
+        self,
+        run_id: str,
+        media_id: str | None,
+        segment_id: str | None,
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE analysis_runs
+                SET current_media_id = ?, current_segment_id = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (media_id, segment_id, _now(), run_id),
             )
         self._require_updated(cursor.rowcount, run_id)
 
@@ -246,16 +308,74 @@ class RunStateStore:
         status: str,
         *,
         error: str | None = None,
+        retry_count_increment: int = 0,
     ) -> None:
+        if retry_count_increment < 0:
+            raise ValueError("retry_count_increment must not be negative")
         timestamp = _now()
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE video_segments
-                SET status = ?, error = ?, last_heartbeat = ?, updated_at = ?
+                SET status = ?, error = ?,
+                    retry_count = retry_count + ?,
+                    last_heartbeat = ?, updated_at = ?
                 WHERE segment_id = ?
                 """,
-                (status, error, timestamp, timestamp, segment_id),
+                (
+                    status,
+                    error,
+                    retry_count_increment,
+                    timestamp,
+                    timestamp,
+                    segment_id,
+                ),
+            )
+        self._require_updated(cursor.rowcount, segment_id)
+
+    def save_segment_result(
+        self,
+        segment_id: str,
+        *,
+        status: str,
+        selected_frames: tuple[Path, ...],
+        local_analysis,
+        cloud_analysis,
+        needs_review: bool,
+        error: str | None = None,
+        retry_count_increment: int = 0,
+    ) -> None:
+        if retry_count_increment < 0:
+            raise ValueError("retry_count_increment must not be negative")
+        timestamp = _now()
+        local_json = self._analysis_json(local_analysis)
+        cloud_json = self._analysis_json(cloud_analysis)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE video_segments
+                SET status = ?, selected_frames_json = ?,
+                    local_result_json = ?, cloud_result_json = ?,
+                    needs_review = ?, error = ?,
+                    retry_count = retry_count + ?, last_heartbeat = ?,
+                    updated_at = ?
+                WHERE segment_id = ?
+                """,
+                (
+                    status,
+                    json.dumps(
+                        [str(Path(path).resolve()) for path in selected_frames],
+                        ensure_ascii=False,
+                    ),
+                    local_json,
+                    cloud_json,
+                    int(needs_review),
+                    error,
+                    retry_count_increment,
+                    timestamp,
+                    timestamp,
+                    segment_id,
+                ),
             )
         self._require_updated(cursor.rowcount, segment_id)
 
@@ -313,6 +433,19 @@ class RunStateStore:
                 (frame_count, timestamp, video_id),
             )
         return True
+
+    @staticmethod
+    def _analysis_json(analysis) -> str | None:
+        if analysis is None:
+            return None
+        return json.dumps(
+            {
+                "description": analysis.description,
+                "highlights": analysis.highlights,
+                "keywords": analysis.keywords,
+            },
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _require_updated(rowcount: int, identity: str) -> None:

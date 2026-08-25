@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from .frame_selector import FrameSelector
+from .gemini_client import GeminiClient
 from .inference import (
     FallbackVideoExtractor,
     FfmpegImagePreparer,
@@ -12,6 +15,9 @@ from .inference import (
     Runner,
     WatchVideoExtractor,
 )
+from .run_state import RunStateStore
+from .scene_segments import SceneSegmenter
+from .segment_pipeline import SegmentPipeline
 from .workspace import MediaWorkspace
 
 
@@ -20,6 +26,20 @@ MCP_VIDEO_ANALYZER_VERSION = "0.8.0"
 
 class RuntimePreflightError(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class AnalysisRuntime:
+    local_analyzer: LocalAnalyzer
+    segment_pipeline: SegmentPipeline
+    run_state: RunStateStore
+
+    def analyze(self, source: Path):
+        return self.local_analyzer.analyze(source)
+
+    @property
+    def video_extractor(self):
+        return self.local_analyzer.video_extractor
 
 
 def _preflight(
@@ -60,7 +80,8 @@ def build_local_analyzer(
     ollama_executable: str = "ollama",
     python_executable: str = sys.executable,
     ffmpeg_executable: str = "ffmpeg",
-) -> LocalAnalyzer:
+    ffprobe_executable: str = "ffprobe",
+) -> AnalysisRuntime:
     skill_root = Path(skill_root).resolve()
     model_check = _preflight(runner, [ollama_executable, "list"])
     if model_check.returncode != 0:
@@ -115,9 +136,10 @@ def build_local_analyzer(
         except (OSError, ValueError):
             mcp = None
 
-    return LocalAnalyzer(
+    evidence_extractor = FallbackVideoExtractor(watch, mcp)
+    local_analyzer = LocalAnalyzer(
         model=model,
-        video_extractor=FallbackVideoExtractor(watch, mcp),
+        video_extractor=evidence_extractor,
         image_preparer=FfmpegImagePreparer(
             output_root=analysis_output / "normalized",
             ffmpeg_executable=ffmpeg_executable,
@@ -125,4 +147,22 @@ def build_local_analyzer(
         ),
         ollama_executable=ollama_executable,
         runner=runner,
+        timeout=600,
     )
+    run_state = RunStateStore(
+        workspace.database_path, excel_path=workspace.excel_path
+    )
+    segment_pipeline = SegmentPipeline(
+        segmenter=SceneSegmenter(
+            ffmpeg_executable=ffmpeg_executable,
+            ffprobe_executable=ffprobe_executable,
+            runner=runner,
+        ),
+        selector=FrameSelector(),
+        local_analyzer=local_analyzer,
+        gemini_client=GeminiClient(),
+        store=run_state,
+        output_root=analysis_output / "segments",
+        evidence_extractor=evidence_extractor,
+    )
+    return AnalysisRuntime(local_analyzer, segment_pipeline, run_state)
